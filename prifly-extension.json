@@ -1,0 +1,7 @@
+{
+  "id": "vastai",
+  "name": "Vast.ai boxes",
+  "description": "Each rented Vast.ai box on the session that rented it: labelled s-<first 8 of its session id>/<name>.",
+  "version": "0.1.0",
+  "main": "index.ts"
+}
