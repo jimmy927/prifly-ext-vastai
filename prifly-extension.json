@@ -1,7 +1,8 @@
 {
   "id": "vastai",
   "name": "Vast.ai boxes",
-  "description": "Each rented Vast.ai box on the session that rented it: labelled s-<first 8 of its session id>/<name>.",
-  "version": "0.1.0",
-  "main": "index.ts"
+  "description": "Each rented Vast.ai box on the session that rented it; with a Claude Code skill and instructions that make sessions label their boxes.",
+  "version": "0.2.0",
+  "main": "index.ts",
+  "prompt": "prompt.md"
 }
