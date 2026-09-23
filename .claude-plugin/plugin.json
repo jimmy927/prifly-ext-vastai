@@ -1,7 +1,9 @@
 {
   "name": "vastai",
   "description": "Renting Vast.ai boxes without surprise bills, and labelling each with the session that rents it (s-<session id>/<name>) so prifly can show it there.",
-  "version": "0.2.0",
-  "author": { "name": "Jimmy Engelbrecht" },
+  "version": "0.3.0",
+  "author": {
+    "name": "Jimmy Engelbrecht"
+  },
   "homepage": "https://github.com/jimmy927/prifly-ext-vastai"
 }

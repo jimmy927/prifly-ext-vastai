@@ -39,6 +39,10 @@ and point `vastai` at it.
 
   prifly loads it into the sessions it runs while the extension is enabled
   (and does not load it twice if Claude Code already has it installed).
+- **A menu item** — right-click a session → **Rent a Vast.ai machine…**:
+  describe what you need; the session has a subagent find the 10 best offers
+  with the skill, shows them in a table to pick from, and rents the one you
+  choose, labelled with that session.
 - **Instructions** — `prompt.md`, added to the system prompt of every session
   prifly runs: label what you rent with your session.
 
@@ -59,6 +63,11 @@ is optional; use the ones your idea needs:
   fixed set, a short label, a tone (`good`, `warning`, `critical`, `info`,
   `muted`) and lines shown on hover. `prifly-api.ts` here is the whole
   contract.
+- **`menu`** — items for a session's right-click menu: a label, an icon, an
+  optional input dialog (`input.title`, `input.placeholder`), and a `prompt`
+  sent to that session with `{input}`, `{sessionId}` and `{session8}` filled
+  in. Sessions prifly runs can also show a table to pick a row from with the
+  `mcp__prifly__pick` tool.
 - **`prompt`** — a Markdown file whose text is added to the system prompt of
   every session prifly starts, after prifly's own note.
 - **A Claude Code plugin** — `.claude-plugin/plugin.json` in the same folder,

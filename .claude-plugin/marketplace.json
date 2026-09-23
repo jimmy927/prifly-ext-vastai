@@ -1,7 +1,12 @@
 {
   "name": "prifly-ext-vastai",
-  "owner": { "name": "Jimmy Engelbrecht" },
-  "metadata": { "description": "The Vast.ai prifly extension, as a Claude Code plugin", "version": "0.2.0" },
+  "owner": {
+    "name": "Jimmy Engelbrecht"
+  },
+  "metadata": {
+    "description": "The Vast.ai prifly extension, as a Claude Code plugin",
+    "version": "0.3.0"
+  },
   "plugins": [
     {
       "name": "vastai",

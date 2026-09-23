@@ -2,7 +2,19 @@
   "id": "vastai",
   "name": "Vast.ai boxes",
   "description": "Each rented Vast.ai box on the session that rented it; with a Claude Code skill and instructions that make sessions label their boxes.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "main": "index.ts",
-  "prompt": "prompt.md"
+  "prompt": "prompt.md",
+  "menu": [
+    {
+      "id": "rent",
+      "label": "Rent a Vast.ai machine\u2026",
+      "icon": "server",
+      "input": {
+        "title": "What do you need the machine for?",
+        "placeholder": "e.g. fine-tune a 4B model for about 3 hours: 24 GB VRAM or more, cheapest reliable host"
+      },
+      "prompt": "Rent a Vast.ai machine for this request from the user: {input}\n\nUse a subagent (the Agent tool) with the `vastai` skill to search the Vast.ai offers that fit the request and choose the 10 best, weighing price against what the job needs and the host's reliability. Then show those 10 to the user with the `mcp__prifly__pick` tool: a one-line summary of the request as the title; columns such as GPU, GPUs, VRAM, CPU cores, RAM, disk, $/h, reliability, location and offer id; the action \"Rent\". If the user picks one, rent exactly that offer as the `vastai` skill says (with `--cancel-unavail`, and cleaning up if the create fails), labelled `s-{session8}/<name>` with a name of at most 8 characters, then say which box it is, what it costs per hour and how to reach it. If the user picks none, ask what to change and search again."
+    }
+  ]
 }
