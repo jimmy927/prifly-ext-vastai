@@ -2,7 +2,7 @@
   "id": "vastai",
   "name": "Vast.ai boxes",
   "description": "Each rented Vast.ai box on the session that rented it; with a Claude Code skill and instructions that make sessions label their boxes.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "main": "index.ts",
   "prompt": "prompt.md",
   "menu": [

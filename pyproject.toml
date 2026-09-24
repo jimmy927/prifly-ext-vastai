@@ -1,0 +1,12 @@
+# The Python tools this extension runs. prifly builds a .venv from this and
+# uv.lock before starting the extension, with its own uv and a Python it
+# manages, and puts the venv's bin on the PATH of the sessions it runs — so
+# `vastai` works on a machine with no Python at all.
+[project]
+name = "prifly-ext-vastai-tools"
+version = "0.4.0"
+requires-python = "==3.12.*"
+dependencies = ["vastai==1.6.0"]
+
+[tool.uv]
+package = false

@@ -23,8 +23,10 @@ honesty about the hardware.
 - **VAI-9 (MUST)** Keep `<name>` to at most 8 characters, so short displays show it whole. Put what the box is for in your notes, not its name.
 
 ## Renting
-The CLI is `pip install vastai`; `vastai set api-key <key>` stores the key in
-`~/.config/vastai/vast_api_key`. Reading the marketplace needs no key.
+In prifly the CLI comes with the extension: `vastai` is on the PATH of every
+session prifly runs (a terminal session needs `uv tool install vastai`).
+`vastai set api-key <key>` stores the key in `~/.config/vastai/vast_api_key`.
+Reading the marketplace needs no key.
 
 ```bash
 vastai show user                                   # credit, and whether an ssh key is registered

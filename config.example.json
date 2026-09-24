@@ -1,4 +1,4 @@
 {
-  "vastai": "/path/to/vastai",
-  "refreshSeconds": 60
+  "refreshSeconds": 60,
+  "sshKey": "~/.ssh/id_ed25519"
 }
