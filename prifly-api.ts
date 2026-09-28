@@ -69,6 +69,35 @@ export type DecorationAction = {
 /** A session the host knows, for an extension to match its things against. */
 export type ExtensionSession = { id: string; title: string; cwd: string; state: string };
 
+/**
+ * One machine this extension offers sessions to use — a rented box — or,
+ * with `kind: "provider"`, itself, when it can rent more. Ids are namespaced
+ * `ext:<extension id>:<key>` before a session sees them, so `key` needs only
+ * be unique within this extension. Fields left out take `Machine`'s own
+ * defaults in prifly's wire package: `os` "other", `trust` "ask-first".
+ */
+export type ExtensionMachine = {
+  key: string;
+  kind?: "machine" | "provider" | "service";
+  label: string;
+  os?: string;
+  arch?: string;
+  /** The argv that runs a command there: `["ssh","root@1.2.3.4","-p","2222"]`. */
+  exec?: string[];
+  access?: string;
+  trust?: "ask-first" | "use-freely";
+  notes?: string;
+  capabilities?: {
+    name: string;
+    state?: "present" | "absent" | "unknown";
+    version?: string;
+    detail?: string;
+    probe?: string;
+  }[];
+  /** The session (or its first 8 characters) that rented it, for whom it is use-freely. */
+  ownerSession?: string;
+};
+
 export type ExtensionApi = {
   /**
    * Replace everything this extension shows. `bySession` is keyed by a
@@ -76,6 +105,12 @@ export type ExtensionApi = {
    * items for an id no session has, and `unclaimed`, go to the status bar.
    */
   show(bySession: Record<string, Decoration[]>, unclaimed: Decoration[]): void;
+  /**
+   * Replace every machine this extension offers sessions to use, the whole
+   * list each time. Absent on a prifly host older than the "machines"
+   * feature — call it as `api.machines?.report(...)`.
+   */
+  machines?: { report(items: ExtensionMachine[]): void };
   /**
    * Carry out an action the reader chose from an item's right-click menu.
    * What it returns is shown to them ("Destroyed lc-box1"); what it throws is
