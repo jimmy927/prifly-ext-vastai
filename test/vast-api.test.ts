@@ -1,0 +1,133 @@
+import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { listInstances, parsePage, readApiKeys } from "../vast-api";
+
+/** A recorded `GET /api/v1/instances/` page, ids, labels and hosts replaced. */
+const recorded: unknown = await Bun.file(join(import.meta.dir, "instances-page.json")).json();
+
+describe("parsePage", () => {
+  test("reads a recorded page into the fields the extension shows", () => {
+    const { rows, next } = parsePage(recorded);
+    expect(next).toBeNull();
+    expect(rows.map((row) => row.id)).toEqual([10000001, 10000002, 10000003]);
+    expect(rows[0]).toEqual({
+      id: 10000001,
+      label: "s-0123abcd/lc-box1",
+      gpu_name: "RTX 5090",
+      num_gpus: 1,
+      actual_status: "exited",
+      intended_status: "stopped",
+      dph_total: 0.48518518518518516,
+      cpu_util: 12.34625,
+      gpu_util: 0,
+      mem_usage: 1.6829644799999999,
+      mem_limit: 30.670848,
+      ssh_host: "ssh1.vast.ai",
+      ssh_port: 20001,
+    });
+    expect(rows[2]?.label).toBeNull();
+  });
+
+  test("an odd field is dropped, not the box", () => {
+    const { rows } = parsePage({
+      instances: [{ id: 7, gpu_util: "n/a", label: "  s-0123abcd/x  ", new_field: { a: 1 } }],
+    });
+    expect(rows).toEqual([{ id: 7, label: "s-0123abcd/x" }]);
+  });
+
+  test("a row that is not a box is skipped", () => {
+    expect(parsePage({ instances: [null, 3, { id: 1 }] }).rows).toEqual([{ id: 1 }]);
+  });
+
+  test("no instances at all is an empty list", () => {
+    expect(parsePage({ instances: null, next_token: "" })).toEqual({ rows: [], next: null });
+  });
+
+  test("a body that is not a page is an error", () => {
+    expect(() => parsePage("<html>")).toThrow("cannot read");
+  });
+});
+
+type Call = { url: string; auth: string };
+
+function server(pages: Record<string, { status: number; body: unknown }>) {
+  const calls: Call[] = [];
+  const get = async (url: string, init: RequestInit) => {
+    const auth = new Headers(init.headers).get("Authorization") ?? "";
+    calls.push({ url, auth });
+    const key = `${auth} ${new URL(url).searchParams.get("after_token") ?? ""}`.trim();
+    const page = pages[key] ?? { status: 404, body: { msg: "no such page" } };
+    return new Response(JSON.stringify(page.body), { status: page.status });
+  };
+  return { calls, get };
+}
+
+describe("listInstances", () => {
+  test("asks what the CLI asks, and follows next_token", async () => {
+    const { calls, get } = server({
+      "Bearer k1": { status: 200, body: { instances: [{ id: 1 }], next_token: "t2" } },
+      "Bearer k1 t2": { status: 200, body: { instances: [{ id: 2 }], next_token: null } },
+    });
+    const rows = await listInstances(["k1"], get);
+    expect(rows.map((row) => row.id)).toEqual([1, 2]);
+    const first = new URL(calls[0]?.url ?? "");
+    expect(first.origin + first.pathname).toBe("https://console.vast.ai/api/v1/instances/");
+    expect(first.searchParams.get("select_filters")).toBe("{}");
+    expect(first.searchParams.get("order_by")).toBe('[{"col":"id","dir":"asc"}]');
+    expect(first.searchParams.get("limit")).toBe("25");
+    expect(new URL(calls[1]?.url ?? "").searchParams.get("after_token")).toBe("t2");
+  });
+
+  test("an expired 2FA key falls back to the API key, as the CLI does", async () => {
+    const { get } = server({
+      "Bearer tfa": { status: 401, body: { msg: "session expired" } },
+      "Bearer api": { status: 200, body: { instances: [{ id: 3 }] } },
+    });
+    expect((await listInstances(["tfa", "api"], get)).map((row) => row.id)).toEqual([3]);
+  });
+
+  test("a refusal says why and never carries the key", async () => {
+    const { get } = server({ "Bearer secret-key": { status: 401, body: { msg: "bad key" } } });
+    const failed = listInstances(["secret-key"], get);
+    await expect(failed).rejects.toThrow("Vast.ai instance list failed (401): bad key");
+    await expect(failed).rejects.not.toThrow("secret-key");
+  });
+
+  test("a server error is not retried with another key", async () => {
+    const { calls, get } = server({ "Bearer a": { status: 500, body: {} } });
+    await expect(listInstances(["a", "b"], get)).rejects.toThrow("(500)");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("no key at all says how to set one", async () => {
+    await expect(listInstances([], server({}).get)).rejects.toThrow("vastai set api-key");
+  });
+});
+
+describe("readApiKeys", () => {
+  test("the environment wins, as it does for the CLI", async () => {
+    expect(await readApiKeys({ VAST_API_KEY: " env " }, "/nonexistent")).toEqual(["env"]);
+  });
+
+  test("2FA key, then API key, then the legacy file", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
+    await mkdir(join(home, ".config", "vastai"), { recursive: true });
+    await writeFile(join(home, ".config", "vastai", "vast_tfa_key"), "tfa\n");
+    await writeFile(join(home, ".config", "vastai", "vast_api_key"), "api\n");
+    await writeFile(join(home, ".vast_api_key"), "api\n");
+    expect(await readApiKeys({}, home)).toEqual(["tfa", "api"]);
+  });
+
+  test("$XDG_CONFIG_HOME moves the config folder", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
+    await mkdir(join(home, "xdg", "vastai"), { recursive: true });
+    await writeFile(join(home, "xdg", "vastai", "vast_api_key"), "xdg");
+    expect(await readApiKeys({ XDG_CONFIG_HOME: join(home, "xdg") }, home)).toEqual(["xdg"]);
+  });
+
+  test("none anywhere is an empty list", async () => {
+    expect(await readApiKeys({}, await mkdtemp(join(tmpdir(), "vastai-keys-")))).toEqual([]);
+  });
+});

@@ -1,3 +1,4 @@
 config.json
 skills/*-local/
 .venv/
+node_modules/

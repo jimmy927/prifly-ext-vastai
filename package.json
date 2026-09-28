@@ -1,0 +1,19 @@
+{
+  "name": "prifly-ext-vastai",
+  "private": true,
+  "type": "module",
+  "description": "A prifly extension: each rented Vast.ai box on the session that rented it.",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check ."
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
+    "@types/bun": "^1.1.14",
+    "typescript": "^7.0.2"
+  }
+}

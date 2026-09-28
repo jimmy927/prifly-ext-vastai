@@ -71,8 +71,9 @@ flowchart LR
   end
   py -- "uv sync" --> venv
   index --> poll
-  poll -- "vastai show instances" --> venv
-  venv -- "REST API + your key" --> vast[("Vast.ai")]
+  poll -- "GET /api/v1/instances/ + your key" --> vast[("Vast.ai")]
+  menu -- "vastai destroy instance" --> venv
+  venv -- "REST API + your key" --> vast
   poll -- "api.show()" --> ui["sidebar icons, goal-bar chips, status bar"]
   prompt --> sys
   skill -- "--plugin-dir" --> skills
@@ -100,8 +101,11 @@ whole. A box with any other label, or none, shows in the status bar marked
 
 ### The display: `index.ts`
 
-- **Polling.** Once a minute (`refreshSeconds`), the module runs
-  `vastai show instances --raw` and reads its JSON.
+- **Polling.** Once a minute (`refreshSeconds`), `vast-api.ts` asks Vast.ai's
+  REST API for the boxes — the same `GET /api/v1/instances/` the CLI's
+  `show instances --raw` sends, with the key `vastai set api-key` saved. It
+  used to run the CLI itself; on WSL2 each run read 30–48 MB off disk and
+  took about a second of CPU, once a minute, to start Python.
 - **Placing.** Each box becomes one item, placed on the session its label
   names.
 - **What an item shows:**
@@ -464,7 +468,8 @@ prompt, or your skill.
 | File | Part |
 |---|---|
 | `prifly-extension.json` | The manifest: id, name, `main`, `prompt`, the menu item |
-| `index.ts` | The display: polls `vastai`, shows boxes on sessions |
+| `index.ts` | The display: polls Vast.ai, shows boxes on sessions |
+| `vast-api.ts` | The box list over Vast.ai's REST API, read tolerantly with zod |
 | `prifly-api.ts` | A copy of prifly's extension contract |
 | `prompt.md` | Instructions added to every session prifly runs |
 | `skills/vastai/SKILL.md` | The Claude Code skill: renting, labelling, cleanup |
