@@ -37,7 +37,7 @@ function field<T extends z.ZodType>(schema: T) {
 /** The CLI strips whitespace from every string it prints; labels come with it. */
 const text = z.string().trim();
 
-/** One box: only what this extension shows. Unknown fields are dropped. */
+/** One box: only what this extension shows and judges. Unknown fields are dropped. */
 export const InstanceSchema = z.object({
   id: field(z.number()),
   label: field(text.nullable()),
@@ -52,6 +52,11 @@ export const InstanceSchema = z.object({
   mem_limit: field(z.number().nullable()),
   ssh_host: field(text),
   ssh_port: field(z.number()),
+  /** Epoch seconds. */
+  start_date: field(z.number()),
+  /** Running totals of billed traffic, in KiB: a box downloading is not idle. */
+  inet_up_billed: field(z.number().nullable()),
+  inet_down_billed: field(z.number().nullable()),
 });
 
 export type Instance = z.infer<typeof InstanceSchema>;

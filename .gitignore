@@ -1,4 +1,5 @@
 config.json
+leases.json*
 skills/*-local/
 .venv/
 node_modules/

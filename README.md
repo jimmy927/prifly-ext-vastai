@@ -127,8 +127,46 @@ whole. A box with any other label, or none, shows in the status bar marked
 - **Failures.** If the CLI fails (offline, no key), the failure is logged as
   `ext.vastai.refresh_failed` in prifly's host log and retried the next
   minute. The extension keeps running.
-- **Read-only.** The module only reads. It never rents, stops or destroys
-  anything; sessions do that.
+- **Rents nothing.** The module never rents or stops a box; sessions do
+  that. It destroys only what breaks a lease, and only with enforcement on
+  (see Leases).
+
+### Leases: `leases.ts`, `rules.ts`, `enforce.ts`, `guard.sh`, `vastlease`
+
+A session's box (labelled `s-<session8>/<name>`) must hold a lease: how long
+the session booked it for. On 2026-09-28 two boxes sat idle for 24 hours
+because the session that rented them hit its usage limit, and the only check
+on them ran inside that session. A lease runs out on its own, so a stopped
+session no longer keeps a box.
+
+- **Booking.** `vastlease` (in `bin/`, on every session's PATH) books a lease
+  for a label before the box is rented, extends it, cancels it, and lists
+  them. Leases are kept in `leases.json` in this folder, under a lock.
+- **The rules** (once a minute):
+  - A box labelled another way is never touched: boxes rented by hand, or by
+    other software, have their own clean-up.
+  - A session's box with no lease is destroyed 5 minutes after it starts.
+  - 15 minutes before a lease ends, the reader is told. 15 minutes after it
+    ended, the box is saved and destroyed. `vastlease cancel` does that at once.
+  - An idle box inside its lease is only told about: CPU and GPU under 5 %
+    and less than 10 MB of traffic for an hour. Traffic is what separates
+    idle from downloading.
+- **Saving.** Before destroying, `/root/.lease/save` runs on the box if it
+  has one: up to 10 minutes, once more 10 minutes later if it fails, then
+  the box is destroyed anyway.
+- **When prifly is closed.** Every leased box that is running gets
+  `guard.sh` as `/root/.lease/guard.sh`, with the lease's end in
+  `/root/.lease/until`, kept current over ssh. Half an hour after the lease
+  ended it runs the same save and destroys the box with its own restricted key
+  (`CONTAINER_API_KEY`, which Vast.ai gives every box). It logs to
+  `/root/.lease/guard.log`.
+- **The chip** shows the time left and turns amber near the end and red past
+  it. Its menu has "Extend lease by 1 hour" and "Extend lease by 4 hours". On a
+  box with no lease, these give it one: that is how the reader keeps a box.
+- **Enforcement is off until you turn it on.** Set `"enforce": true` in
+  `config.json`. Until then nothing is destroyed and no guard is installed;
+  the extension only says "Would destroy lc-box3 (no lease)". Notices go
+  through prifly's `api.notify`, and only to the log on a prifly without it.
 
 ### Your ssh key
 
@@ -469,10 +507,14 @@ prompt, or your skill.
 |---|---|
 | `prifly-extension.json` | The manifest: id, name, `main`, `prompt`, the menu item |
 | `index.ts` | The display: polls Vast.ai, shows boxes on sessions |
+| `leases.ts`, `rules.ts`, `enforce.ts` | Leases: the store, the rules, carrying them out |
+| `guard.sh` | The on-box guard that destroys a box whose lease is over while prifly is closed |
+| `vastlease.ts`, `bin/vastlease` | The command sessions book, extend and cancel leases with |
+| `run.ts` | Running the CLI here and commands on a box over ssh |
 | `vast-api.ts` | The box list over Vast.ai's REST API, read tolerantly with zod |
 | `prifly-api.ts` | A copy of prifly's extension contract |
 | `prompt.md` | Instructions added to every session prifly runs |
 | `skills/vastai/SKILL.md` | The Claude Code skill: renting, labelling, cleanup |
 | `.claude-plugin/plugin.json`, `marketplace.json` | Makes the folder a Claude Code plugin, and installable without prifly |
 | `pyproject.toml`, `uv.lock` | Pins the `vastai` CLI; prifly builds the `.venv` from them |
-| `config.example.json` | Optional settings: `sshKey` for the terminal, `refreshSeconds`, and `vastai` to use another CLI |
+| `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, and `vastai` to use another CLI |

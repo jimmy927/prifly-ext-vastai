@@ -9,37 +9,58 @@
  *
  * Every minute this lists the account's boxes over Vast.ai's REST API
  * (`vast-api.ts`; it used to run `vastai show instances --raw`, a Python
- * start-up each time) and shows one item per box: its name and hourly rate, coloured by how busy it is — red below 20 %
- * CPU or GPU (paid for, idle), green from 80 %, amber between — and red with
- * its status when it is not running, since a stopped box still bills disk.
+ * start-up each time) and shows one item per box: its name, hourly rate and
+ * lease, coloured by how busy it is — red below 20 % CPU or GPU (paid for,
+ * idle), green from 80 %, amber between — and red with its status when it is
+ * not running, since a stopped box still bills disk. A lease about to end
+ * turns it amber, and a box with none, or past its lease, red.
+ *
+ * A session's box holds a lease (`leases.ts`, booked with `vastlease`), and
+ * `enforce.ts` destroys the box when it has none or it ran out; with
+ * `"enforce": false`, the default, it only says what it would do.
  *
  * `vastai`, still used to destroy a box, is this extension's own: prifly
  * builds a `.venv` from `pyproject.toml` and `uv.lock` before starting it, and
  * hands its `bin` in `api.paths`. The list reads the API key where the CLI
  * keeps it (`vastai set api-key`). Config (optional), in this folder's `config.json`:
- *   { "vastai": "/path/to/another/vastai", "refreshSeconds": 60 }
+ *   { "vastai": "/path/to/another/vastai", "refreshSeconds": 60, "enforce": true }
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Enforcer, type Judged } from "./enforce";
+import { extend, leasesPath, updateLeases } from "./leases";
 import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
+import { SESSION_LABEL, span } from "./rules";
+import { sshCommand, sshTarget, vastai } from "./run";
 import { type Instance, listInstances, readApiKeys } from "./vast-api";
 
-/** `sshKey`: the private key your boxes accept, for the terminal a click opens. */
-type Config = { vastai: string; refreshSeconds: number; sshKey: string | null };
+/**
+ * `sshKey`: the private key your boxes accept, for the terminal a click opens
+ * and the save and guard the leases run. `enforce`: destroy what breaks a lease.
+ */
+type Config = { vastai: string; refreshSeconds: number; sshKey: string | null; enforce: boolean };
 
-const LABEL = /^s-([0-9a-f]{8})\/(.+)$/;
 const IDLE_PCT = 20;
 const BUSY_PCT = 80;
+/** The chip menu's "Extend lease" choices, in hours. */
+const EXTEND_HOURS: Record<string, number> = { extend1: 1, extend4: 4 };
 
 export async function activate(api: ExtensionApi): Promise<() => void> {
   const config = await readConfig(api.folder, api.paths);
+  const enforcer = new Enforcer(api, config);
+  const labels = new Map<number, string>();
   let stopped = false;
+  let busy = false;
   const refresh = async () => {
+    if (busy) return;
+    busy = true;
     try {
       const boxes = await listInstances(await readApiKeys());
+      const judged = await enforcer.round(boxes, Date.now());
       if (!stopped) {
-        show(api, boxes, config.sshKey);
+        remember(labels, boxes);
+        show(api, boxes, judged, config);
         // Absent on a prifly older than "machines": the boxes still show.
         api.machines?.report(machinesOf(boxes, config.sshKey));
       }
@@ -49,14 +70,27 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       api.log("refresh_failed", {
         message: caught instanceof Error ? caught.message : String(caught),
       });
+    } finally {
+      busy = false;
     }
   };
-  // The right-click "Destroy box…" (see `decoration`): prifly has already
-  // asked the reader, so the CLI's own prompt is skipped.
   api.onAction(async (key, action) => {
-    if (action !== "destroy" || !/^\d+$/.test(key)) {
+    const hours = EXTEND_HOURS[action];
+    if (!/^\d+$/.test(key) || (action !== "destroy" && hours === undefined)) {
       throw new Error(`Unknown action ${action} on ${key}`);
     }
+    const id = Number(key);
+    if (hours !== undefined) {
+      // From the reader's menu: a box with no lease gets one, so it is kept.
+      const label = labels.get(id) ?? "";
+      const lease = await updateLeases(leasesPath(api.folder), (leases) =>
+        extend(leases, { box: id }, hours, Date.now(), { box: id, label }),
+      );
+      api.log("extended", { instance: id, until: lease.until, by: "reader" });
+      void refresh();
+      return `Vast.ai box #${key} is leased until ${new Date(lease.until).toLocaleTimeString()}.`;
+    }
+    // "Destroy box…": prifly has already asked the reader, so the CLI's own prompt is skipped.
     await vastai(config.vastai, ["destroy", "instance", key, "-y"]);
     api.log("destroyed", { instance: key });
     void refresh();
@@ -66,8 +100,15 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
   const timer = setInterval(() => void refresh(), config.refreshSeconds * 1000);
   return () => {
     stopped = true;
+    enforcer.stop();
     clearInterval(timer);
   };
+}
+
+/** Each box's label by its id, for the menu's "Extend lease" on a box with none. */
+function remember(labels: Map<number, string>, boxes: readonly Instance[]): void {
+  labels.clear();
+  for (const box of boxes) if (box.id !== undefined) labels.set(box.id, box.label ?? "");
 }
 
 async function readConfig(folder: string, paths: readonly string[]): Promise<Config> {
@@ -78,31 +119,22 @@ async function readConfig(folder: string, paths: readonly string[]): Promise<Con
     vastai: raw.vastai ?? Bun.which("vastai", { PATH: paths.join(":") }) ?? "vastai",
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
     sshKey: raw.sshKey == null ? null : raw.sshKey.replace(/^~(?=\/)/, homedir()),
+    enforce: raw.enforce === true,
   };
 }
 
-/** Run the CLI; its stdout, or an error with the end of what it said. */
-async function vastai(cli: string, args: string[]): Promise<string> {
-  const proc = Bun.spawn([cli, ...args], { stdout: "pipe", stderr: "pipe" });
-  const timeout = setTimeout(() => proc.kill(), 30_000);
-  const [code, out, err] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  clearTimeout(timeout);
-  if (code !== 0) {
-    throw new Error(`vastai ${args[0] ?? ""} failed (${code}): ${err.trim().slice(0, 200)}`);
-  }
-  return out;
-}
-
-function show(api: ExtensionApi, boxes: readonly Instance[], sshKey: string | null): void {
+function show(
+  api: ExtensionApi,
+  boxes: readonly Instance[],
+  judged: ReadonlyMap<number, Judged>,
+  config: Config,
+): void {
   const bySession: Record<string, Decoration[]> = {};
   const unclaimed: Decoration[] = [];
   for (const box of boxes) {
     const { session, name } = ownerOf(box);
-    const item = decoration(box, name, session === null, sshKey);
+    const lease = box.id === undefined ? undefined : judged.get(box.id);
+    const item = decoration(box, name, session, lease, config);
     if (session === null) unclaimed.push(item);
     else bySession[session] = [...(bySession[session] ?? []), item];
   }
@@ -112,34 +144,39 @@ function show(api: ExtensionApi, boxes: readonly Instance[], sshKey: string | nu
 /** Who rented a box and what to call it, from its `s-<session8>/<name>` label. */
 function ownerOf(box: Instance): { session: string | null; name: string } {
   const label = box.label ?? "";
-  const owner = LABEL.exec(label);
+  const owner = SESSION_LABEL.exec(label);
   return { session: owner?.[1] ?? null, name: owner?.[2] ?? (label || `#${box.id ?? "?"}`) };
-}
-
-/** Where to ssh to a box: only a running one with an address has somewhere. */
-function sshTarget(box: Instance): { host: string; port: number } | null {
-  const running = (box.actual_status ?? box.intended_status) === "running";
-  const { ssh_host: host, ssh_port: port } = box;
-  return running && host !== undefined && port !== undefined ? { host, port } : null;
 }
 
 function decoration(
   box: Instance,
   name: string,
-  unclaimed: boolean,
-  sshKey: string | null,
+  session: string | null,
+  lease: Judged | undefined,
+  config: Config,
 ): Decoration {
   const status = box.actual_status ?? box.intended_status ?? "?";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   const running = status === "running";
   const target = sshTarget(box);
+  const loadTone = running ? load(percent(box.cpu_util), percent(box.gpu_util)) : "critical";
+  const leased = lease === undefined ? null : leaseLine(lease, config.enforce);
   return {
     key: String(box.id ?? name),
     icon: running ? "server" : "alert",
-    label: `${unclaimed ? "? " : ""}${name} ${running ? rate : status}`,
-    tone: running ? load(percent(box.cpu_util), percent(box.gpu_util)) : "critical",
-    details: details(box, status, rate, unclaimed),
+    label: `${session === null ? "? " : ""}${name} ${running ? rate : status}${leased === null ? "" : ` · ${leased.short}`}`,
+    tone: leased?.tone ?? loadTone,
+    details: [
+      ...details(box, status, rate, session === null),
+      ...(leased === null ? [] : leased.details),
+    ],
     actions: [
+      ...(session === null
+        ? []
+        : [
+            { id: "extend1", label: "Extend lease by 1 hour" },
+            { id: "extend4", label: "Extend lease by 4 hours" },
+          ]),
       {
         id: "destroy",
         label: "Destroy box…",
@@ -148,17 +185,70 @@ function decoration(
       },
     ],
     // A click on the box opens ssh to it in a terminal window of prifly's own.
-    // accept-new: the first connection to a box trusts its key, as renting it
-    // already did; a key that later changes is still refused.
     ...(target === null
       ? {}
       : {
           terminal: {
             title: `${name} — ssh root@${target.host}:${target.port}`,
-            command: sshCommand(target.host, target.port, sshKey),
+            command: sshCommand(target.host, target.port, config.sshKey),
           },
         }),
   };
+}
+
+/**
+ * A session's box's lease, for its chip: a few words, a colour when the lease
+ * asks for attention (null leaves the load's colour), and hover lines.
+ */
+function leaseLine(
+  { verdict, idleMs, until }: Judged,
+  enforce: boolean,
+): { short: string; tone: DecorationTone | null; details: string[] } | null {
+  const ends = until === null ? "" : new Date(until).toLocaleTimeString([], { timeStyle: "short" });
+  const idle = idleMs >= 60 * 60_000 ? [`Idle for ${span(idleMs)} (CPU, GPU and network)`] : [];
+  const off = enforce ? [] : ["Lease enforcement is off: nothing is destroyed."];
+  switch (verdict.kind) {
+    case "unmanaged":
+      return null;
+    case "leased":
+      return {
+        short: span(verdict.leftMs),
+        tone: null,
+        details: [`Leased until ${ends} (${span(verdict.leftMs)} left)`, ...idle],
+      };
+    case "ending":
+      return {
+        short: `${span(verdict.leftMs)} left`,
+        tone: "warning",
+        details: [`Lease ends ${ends}: extend it or the box is destroyed`, ...idle],
+      };
+    case "grace":
+      return {
+        short: "lease over",
+        tone: "critical",
+        details: [
+          `Lease ended ${ends}: destroyed in ${span(verdict.leftMs)} unless extended`,
+          ...off,
+        ],
+      };
+    case "unbooked":
+      return {
+        short: "no lease",
+        tone: "critical",
+        details: [`No lease: destroyed in ${span(verdict.leftMs)} unless booked`, ...off],
+      };
+    case "due":
+      return {
+        short: enforce ? "destroying" : "no lease",
+        tone: "critical",
+        details: [
+          `${enforce ? "Being saved and destroyed" : "Would be destroyed"}: ${verdict.reason}`,
+          ...off,
+        ],
+      };
+    default:
+      return null;
+  }
 }
 
 /** The hover lines of a box. */
@@ -192,7 +282,8 @@ function machinesOf(boxes: readonly Instance[], sshKey: string | null): Extensio
     kind: "provider",
     label: "Vast.ai",
     trust: "ask-first",
-    notes: "Rents Linux GPU or CPU boxes by the hour; read the vastai skill before renting one.",
+    notes:
+      "Rents Linux GPU or CPU boxes by the hour; read the vastai skill before renting one, and book its lease with `vastlease book` first.",
     capabilities: [
       { name: "rent:linux-gpu", state: "present" },
       { name: "rent:linux-cpu", state: "present" },
@@ -219,24 +310,6 @@ function machineOf(box: Instance, sshKey: string | null): ExtensionMachine {
         ? []
         : [{ name: "gpu", state: "present", version: gpu, detail: `${box.num_gpus ?? 1}x` }],
   };
-}
-
-/**
- * ssh to a box, as the root user Vast.ai gives. With `sshKey`, that key and
- * only it: ssh's default keys are not the one a Vast.ai account registers,
- * and offering several first can use up the box's allowed attempts.
- */
-function sshCommand(host: string, port: number, sshKey: string | null): string[] {
-  const key = sshKey === null ? [] : ["-i", sshKey, "-o", "IdentitiesOnly=yes"];
-  return [
-    "ssh",
-    ...key,
-    "-o",
-    "StrictHostKeyChecking=accept-new",
-    "-p",
-    String(port),
-    `root@${host}`,
-  ];
 }
 
 function percent(value: number | null | undefined): number | null {

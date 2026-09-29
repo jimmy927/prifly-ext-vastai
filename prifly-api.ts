@@ -117,6 +117,12 @@ export type ExtensionApi = {
    * shown as the failure. One handler per extension; a second call replaces it.
    */
   onAction(handler: (key: string, action: string) => Promise<string> | string): void;
+  /**
+   * Tell the reader something that cannot wait for them to look at a chip,
+   * under the extension's name; `session` makes a click open that session.
+   * Absent on a prifly host older than "notify" — call it as `api.notify?.(…)`.
+   */
+  notify?(text: string, options?: { tone?: DecorationTone; session?: string }): void;
   /** The sessions on this machine the host knows now. */
   sessions(): ExtensionSession[];
   /** A line in the host's log, under `ext.<id>.<event>`. */

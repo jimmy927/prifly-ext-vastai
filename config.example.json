@@ -1,4 +1,5 @@
 {
   "refreshSeconds": 60,
-  "sshKey": "~/.ssh/id_ed25519"
+  "sshKey": "~/.ssh/id_ed25519",
+  "enforce": false
 }

@@ -22,6 +22,26 @@ honesty about the hardware.
 - **VAI-8 (KNOW)** Relabel with `vastai label instance <id> s-<8 chars>/<name>`. A box handed to another session gets that session's id.
 - **VAI-9 (MUST)** Keep `<name>` to at most 8 characters, so short displays show it whole. Put what the box is for in your notes, not its name.
 
+## Leases: how long a session may keep a box
+The prifly Vast.ai extension destroys a box labelled `s-<session>/<name>`
+that has no lease, or whose lease ended more than 15 minutes ago. Boxes with
+other labels (rented by hand, or by other software) are never touched. A box
+whose session stopped — a usage limit, a crash, prifly closed — cannot extend
+its lease, so it goes when the lease ends; each leased box also runs a guard
+(`/root/.lease/guard.sh`) that destroys it with the box's own key if prifly is
+not running then.
+
+```bash
+vastlease book <name> <hours>     # BEFORE vastai create; at most 24 hours ahead
+vastlease extend <name> <hours>   # still working: add hours
+vastlease cancel <name>           # done: saved and destroyed within a minute
+vastlease list
+```
+
+- **VAI-L1 (MUST)** Book the lease before `vastai create`. A new box without one has 5 minutes before it is destroyed.
+- **VAI-L2 (MUST)** Book for the job's real length plus a margin, and extend while it runs; you are warned 15 minutes before the end. Cancel as soon as the work is done — an idle box inside its lease is only warned about, never destroyed.
+- **VAI-L3 (MUST)** A box holding results gets a `/root/.lease/save` script (executable) that copies them off the box. It runs before every automatic destroy, for up to 10 minutes, and once more 10 minutes later if it fails; after that the box is destroyed anyway.
+
 ## Renting
 In prifly the CLI comes with the extension: `vastai` is on the PATH of every
 session prifly runs (a terminal session needs `uv tool install vastai`).
@@ -32,6 +52,7 @@ Reading the marketplace needs no key.
 vastai show user                                   # credit, and whether an ssh key is registered
 vastai create ssh-key "$(cat ~/.ssh/<your_key>.pub)" -y
 vastai search offers 'rentable=true num_gpus>=1 reliability>0.98' -o 'dph_total'
+vastlease book <name> <hours>                      # the lease first (VAI-L1)
 vastai create instance <offer> --image ubuntu:22.04 --disk 40 --ssh --direct \
    --onstart-cmd 'sleep infinity' --cancel-unavail --label "s-${CLAUDE_CODE_SESSION_ID:0:8}/<name>"
 yes y | vastai destroy instance <id>               # destroy asks for confirmation
