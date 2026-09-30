@@ -64,6 +64,8 @@ export type DecorationAction = {
   confirm?: string | undefined;
   /** Drawn in the danger colour. */
   destructive?: boolean | undefined;
+  /** Shown but not choosable, so the menu keeps its shape. */
+  disabled?: boolean;
 };
 
 /** A session the host knows, for an extension to match its things against. */
@@ -96,6 +98,8 @@ export type ExtensionMachine = {
   }[];
   /** The session (or its first 8 characters) that rented it, for whom it is use-freely. */
   ownerSession?: string;
+  status?: { text: string; tone?: DecorationTone };
+  actions?: DecorationAction[];
 };
 
 export type ExtensionApi = {

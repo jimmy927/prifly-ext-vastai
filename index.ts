@@ -33,10 +33,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Enforcer, type Judged } from "./enforce";
-import { extend, leasesPath, updateLeases } from "./leases";
+import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
+import { boxActions, EXTEND_HOURS, leaseLine, providerCard, statusOf } from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
-import { parseLabel, span } from "./rules";
+import { parseLabel } from "./rules";
 import { sshCommand, sshTarget, vastai } from "./run";
 import { type Instance, listInstances, readApiKeys } from "./vast-api";
 
@@ -54,8 +55,6 @@ type Config = {
 
 const IDLE_PCT = 20;
 const BUSY_PCT = 80;
-/** The chip menu's "Extend lease" choices, in hours. */
-const EXTEND_HOURS: Record<string, number> = { extend1: 1, extend4: 4 };
 
 export async function activate(api: ExtensionApi): Promise<() => void> {
   const config = await readConfig(api.folder, api.paths);
@@ -73,7 +72,8 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
         remember(labels, boxes);
         show(api, boxes, judged, config);
         // Absent on a prifly older than "machines": the boxes still show.
-        api.machines?.report(machinesOf(boxes, config));
+        const waiting = (await readLeases(leasesPath(api.folder))).filter((l) => l.box === null);
+        api.machines?.report(machinesOf(boxes, config, judged, waiting));
       }
     } catch (caught) {
       // No API key, a refused one, or offline: said in the log, and tried
@@ -169,12 +169,6 @@ function ownerOf(box: Instance, owner: string): { session: string | null; name: 
   return { session: parsed.session, name: parsed.name };
 }
 
-/** Whether the lease rules act on a box: this owner's, from a session this prifly knows. */
-function isManaged(lease: Judged | undefined): boolean {
-  const kind = lease?.verdict.kind;
-  return kind !== undefined && kind !== "unmanaged" && kind !== "foreign" && kind !== "stranger";
-}
-
 function decoration(
   box: Instance,
   name: string,
@@ -195,20 +189,7 @@ function decoration(
     label: `${unclaimed ? "? " : ""}${name} ${running ? rate : status}${leased === null ? "" : ` · ${leased.short}`}`,
     tone: leased?.tone ?? loadTone,
     details: [...details(box, status, rate, unclaimed), ...(leased === null ? [] : leased.details)],
-    actions: [
-      ...(!isManaged(lease)
-        ? []
-        : [
-            { id: "extend1", label: "Extend lease by 1 hour" },
-            { id: "extend4", label: "Extend lease by 4 hours" },
-          ]),
-      {
-        id: "destroy",
-        label: "Destroy box…",
-        confirm: `Destroy ${name} (Vast.ai #${box.id ?? "?"}, ${rate})? The box and everything on its disk are deleted, and it stops billing. This cannot be undone.`,
-        destructive: true,
-      },
-    ],
+    actions: boxActions(box.id ?? "?", name, rate, lease),
     // A click on the box opens ssh to it in a terminal window of prifly's own.
     ...(target === null
       ? {}
@@ -219,75 +200,6 @@ function decoration(
           },
         }),
   };
-}
-
-/**
- * A session's box's lease, for its chip: a few words, a colour when the lease
- * asks for attention (null leaves the load's colour), and hover lines.
- */
-function leaseLine(
-  { verdict, idleMs, until }: Judged,
-  enforce: boolean,
-): { short: string; tone: DecorationTone | null; details: string[] } | null {
-  const ends = until === null ? "" : new Date(until).toLocaleTimeString([], { timeStyle: "short" });
-  const idle = idleMs >= 60 * 60_000 ? [`Idle for ${span(idleMs)} (CPU, GPU and network)`] : [];
-  const off = enforce ? [] : ["Lease enforcement is off: nothing is destroyed."];
-  switch (verdict.kind) {
-    case "unmanaged":
-      return null;
-    case "foreign":
-      return {
-        short: "other prifly",
-        tone: null,
-        details: [`Another prifly's box (owner ${verdict.owner}): never enforced here`],
-      };
-    case "stranger":
-      return {
-        short: "not ours",
-        tone: "warning",
-        details: [
-          `Session ${verdict.session} is not this prifly's session: never destroyed or guarded here`,
-        ],
-      };
-    case "leased":
-      return {
-        short: span(verdict.leftMs),
-        tone: null,
-        details: [`Leased until ${ends} (${span(verdict.leftMs)} left)`, ...idle],
-      };
-    case "ending":
-      return {
-        short: `${span(verdict.leftMs)} left`,
-        tone: "warning",
-        details: [`Lease ends ${ends}: extend it or the box is destroyed`, ...idle],
-      };
-    case "grace":
-      return {
-        short: "lease over",
-        tone: "critical",
-        details: [
-          `Lease ended ${ends}: destroyed in ${span(verdict.leftMs)} unless extended`,
-          ...off,
-        ],
-      };
-    case "unbooked":
-      return {
-        short: "no lease",
-        tone: "critical",
-        details: [`No lease: destroyed in ${span(verdict.leftMs)} unless booked`, ...off],
-      };
-    case "due":
-      return {
-        short: enforce ? "destroying" : "no lease",
-        tone: "critical",
-        details: [
-          `${enforce ? "Being saved and destroyed" : "Would be destroyed"}: ${verdict.reason}`,
-          ...off,
-        ],
-      };
-    default:
-      return null;
-  }
 }
 
 /** The hover lines of a box. */
@@ -314,13 +226,21 @@ function details(box: Instance, status: string, rate: string, unclaimed: boolean
  * owner's, is ask-first for all, since nobody here knows its history. Renting costs money, so the
  * provider is ask-first.
  */
-function machinesOf(boxes: readonly Instance[], config: Config): ExtensionMachine[] {
-  const items = boxes.map((box) => machineOf(box, config));
+function machinesOf(
+  boxes: readonly Instance[],
+  config: Config,
+  judged: ReadonlyMap<number, Judged>,
+  waiting: readonly Lease[],
+): ExtensionMachine[] {
+  const items = boxes.map((box) =>
+    machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id)),
+  );
   const provider: ExtensionMachine = {
     key: "provider",
     kind: "provider",
     label: "Vast.ai",
     trust: "ask-first",
+    ...providerCard(waiting),
     notes:
       "Rents Linux GPU or CPU boxes by the hour; read the vastai skill before renting one, and book its lease with `vastlease book` first.",
     capabilities: [
@@ -331,14 +251,21 @@ function machinesOf(boxes: readonly Instance[], config: Config): ExtensionMachin
   return [...items, provider];
 }
 
-function machineOf(box: Instance, { sshKey, owner }: Config): ExtensionMachine {
+function machineOf(
+  box: Instance,
+  { sshKey, owner, enforce }: Config,
+  lease: Judged | undefined,
+): ExtensionMachine {
   const { session, name } = ownerOf(box, owner);
   const running = (box.actual_status ?? box.intended_status) === "running";
   const target = sshTarget(box);
   const gpu = box.gpu_name ?? "";
+  const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   return {
     key: String(box.id ?? name),
     label: name,
+    status: statusOf(lease, session, owner, enforce),
+    actions: boxActions(box.id ?? "?", name, rate, lease),
     os: "linux",
     exec: target === null ? [] : sshCommand(target.host, target.port, sshKey),
     trust: session === null ? "ask-first" : "use-freely",
