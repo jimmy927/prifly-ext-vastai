@@ -1,11 +1,15 @@
 /**
  * Vast.ai boxes, on the sessions that rented them.
  *
- * A box belongs to the session whose id starts its label:
- * `s-<first 8 characters of the session id>/<name>`, e.g. `s-e5636c90/lc-box1`.
- * prifly tells every session it runs its own id, so a session can label what
- * it rents. A box without such a label is unclaimed: it shows in prifly's
- * status bar, because a rented box nobody owns is money being spent.
+ * A box belongs to the session whose id starts its label, under this
+ * prifly's owner: `<owner>/s-<first 8 characters of the session id>/<name>`,
+ * e.g. `jimmy/s-e5636c90/lc-box1` (the older `s-e5636c90/lc-box1` still
+ * counts as this owner's). prifly tells every session it runs its own id, and
+ * `vastlease book` prints the whole label, so a session can label what it
+ * rents. A box without such a label is unclaimed, and one of another owner —
+ * another prifly on the same Vast.ai account — is that prifly's: both show in
+ * prifly's status bar, because a rented box is money being spent, and neither
+ * is ever enforced.
  *
  * Every minute this lists the account's boxes over Vast.ai's REST API
  * (`vast-api.ts`; it used to run `vastai show instances --raw`, a Python
@@ -23,15 +27,16 @@
  * builds a `.venv` from `pyproject.toml` and `uv.lock` before starting it, and
  * hands its `bin` in `api.paths`. The list reads the API key where the CLI
  * keeps it (`vastai set api-key`). Config (optional), in this folder's `config.json`:
- *   { "vastai": "/path/to/another/vastai", "refreshSeconds": 60, "enforce": true }
+ *   { "vastai": "/path/to/another/vastai", "refreshSeconds": 60, "enforce": true, "owner": "jimmy" }
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Enforcer, type Judged } from "./enforce";
 import { extend, leasesPath, updateLeases } from "./leases";
+import { readOwner } from "./owner";
 import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
-import { SESSION_LABEL, span } from "./rules";
+import { parseLabel, span } from "./rules";
 import { sshCommand, sshTarget, vastai } from "./run";
 import { type Instance, listInstances, readApiKeys } from "./vast-api";
 
@@ -39,7 +44,13 @@ import { type Instance, listInstances, readApiKeys } from "./vast-api";
  * `sshKey`: the private key your boxes accept, for the terminal a click opens
  * and the save and guard the leases run. `enforce`: destroy what breaks a lease.
  */
-type Config = { vastai: string; refreshSeconds: number; sshKey: string | null; enforce: boolean };
+type Config = {
+  vastai: string;
+  refreshSeconds: number;
+  sshKey: string | null;
+  enforce: boolean;
+  owner: string;
+};
 
 const IDLE_PCT = 20;
 const BUSY_PCT = 80;
@@ -62,7 +73,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
         remember(labels, boxes);
         show(api, boxes, judged, config);
         // Absent on a prifly older than "machines": the boxes still show.
-        api.machines?.report(machinesOf(boxes, config.sshKey));
+        api.machines?.report(machinesOf(boxes, config));
       }
     } catch (caught) {
       // No API key, a refused one, or offline: said in the log, and tried
@@ -120,6 +131,7 @@ async function readConfig(folder: string, paths: readonly string[]): Promise<Con
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
     sshKey: raw.sshKey == null ? null : raw.sshKey.replace(/^~(?=\/)/, homedir()),
     enforce: raw.enforce === true,
+    owner: await readOwner(folder, process.env),
   };
 }
 
@@ -132,7 +144,7 @@ function show(
   const bySession: Record<string, Decoration[]> = {};
   const unclaimed: Decoration[] = [];
   for (const box of boxes) {
-    const { session, name } = ownerOf(box);
+    const { session, name } = ownerOf(box, config.owner);
     const lease = box.id === undefined ? undefined : judged.get(box.id);
     const item = decoration(box, name, session, lease, config);
     if (session === null) unclaimed.push(item);
@@ -141,11 +153,26 @@ function show(
   api.show(bySession, unclaimed);
 }
 
-/** Who rented a box and what to call it, from its `s-<session8>/<name>` label. */
-function ownerOf(box: Instance): { session: string | null; name: string } {
+/**
+ * Which of this prifly's sessions rented a box, and what to call it, from its
+ * `<owner>/s-<session8>/<name>` label (or the older `s-<session8>/<name>`). A
+ * box of another owner has no session here: that prifly's session ids mean
+ * nothing on this one, so it is named with its owner.
+ */
+function ownerOf(box: Instance, owner: string): { session: string | null; name: string } {
   const label = box.label ?? "";
-  const owner = SESSION_LABEL.exec(label);
-  return { session: owner?.[1] ?? null, name: owner?.[2] ?? (label || `#${box.id ?? "?"}`) };
+  const parsed = parseLabel(label);
+  if (parsed === null) return { session: null, name: label || `#${box.id ?? "?"}` };
+  if (parsed.owner !== null && parsed.owner !== owner) {
+    return { session: null, name: `${parsed.owner}/${parsed.name}` };
+  }
+  return { session: parsed.session, name: parsed.name };
+}
+
+/** Whether the lease rules act on a box: this owner's, from a session this prifly knows. */
+function isManaged(lease: Judged | undefined): boolean {
+  const kind = lease?.verdict.kind;
+  return kind !== undefined && kind !== "unmanaged" && kind !== "foreign" && kind !== "stranger";
 }
 
 function decoration(
@@ -161,17 +188,15 @@ function decoration(
   const target = sshTarget(box);
   const loadTone = running ? load(percent(box.cpu_util), percent(box.gpu_util)) : "critical";
   const leased = lease === undefined ? null : leaseLine(lease, config.enforce);
+  const unclaimed = session === null && lease?.verdict.kind !== "foreign";
   return {
     key: String(box.id ?? name),
     icon: running ? "server" : "alert",
-    label: `${session === null ? "? " : ""}${name} ${running ? rate : status}${leased === null ? "" : ` · ${leased.short}`}`,
+    label: `${unclaimed ? "? " : ""}${name} ${running ? rate : status}${leased === null ? "" : ` · ${leased.short}`}`,
     tone: leased?.tone ?? loadTone,
-    details: [
-      ...details(box, status, rate, session === null),
-      ...(leased === null ? [] : leased.details),
-    ],
+    details: [...details(box, status, rate, unclaimed), ...(leased === null ? [] : leased.details)],
     actions: [
-      ...(session === null
+      ...(!isManaged(lease)
         ? []
         : [
             { id: "extend1", label: "Extend lease by 1 hour" },
@@ -210,6 +235,20 @@ function leaseLine(
   switch (verdict.kind) {
     case "unmanaged":
       return null;
+    case "foreign":
+      return {
+        short: "other prifly",
+        tone: null,
+        details: [`Another prifly's box (owner ${verdict.owner}): never enforced here`],
+      };
+    case "stranger":
+      return {
+        short: "not ours",
+        tone: "warning",
+        details: [
+          `Session ${verdict.session} is not this prifly's session: never destroyed or guarded here`,
+        ],
+      };
     case "leased":
       return {
         short: span(verdict.leftMs),
@@ -263,7 +302,7 @@ function details(box: Instance, status: string, rate: string, unclaimed: boolean
     running ? `CPU ${cpu} · GPU ${gpu}${gpus} (${box.gpu_name ?? "?"})` : "",
     running ? `Memory ${memory(box)}` : "",
     box.ssh_host === undefined ? "" : `ssh -p ${box.ssh_port} root@${box.ssh_host}`,
-    unclaimed ? "Unclaimed: label it s-<session id>/<name> or destroy it." : "",
+    unclaimed ? "Unclaimed: label it <owner>/s-<session8>/<name> or destroy it." : "",
   ].filter((line) => line !== "");
 }
 
@@ -271,12 +310,12 @@ function details(box: Instance, status: string, rate: string, unclaimed: boolean
  * Each box as a machine a session can use, plus Vast.ai itself as a provider
  * it can rent more from. A claimed box is use-freely for the session whose id
  * its label carries — it rented it — and ask-first for every other session,
- * which prifly works out from `ownerSession`; an unclaimed one is ask-first
- * for all, since nobody here knows its history. Renting costs money, so the
+ * which prifly works out from `ownerSession`; an unclaimed one, or another
+ * owner's, is ask-first for all, since nobody here knows its history. Renting costs money, so the
  * provider is ask-first.
  */
-function machinesOf(boxes: readonly Instance[], sshKey: string | null): ExtensionMachine[] {
-  const items = boxes.map((box) => machineOf(box, sshKey));
+function machinesOf(boxes: readonly Instance[], config: Config): ExtensionMachine[] {
+  const items = boxes.map((box) => machineOf(box, config));
   const provider: ExtensionMachine = {
     key: "provider",
     kind: "provider",
@@ -292,8 +331,8 @@ function machinesOf(boxes: readonly Instance[], sshKey: string | null): Extensio
   return [...items, provider];
 }
 
-function machineOf(box: Instance, sshKey: string | null): ExtensionMachine {
-  const { session, name } = ownerOf(box);
+function machineOf(box: Instance, { sshKey, owner }: Config): ExtensionMachine {
+  const { session, name } = ownerOf(box, owner);
   const running = (box.actual_status ?? box.intended_status) === "running";
   const target = sshTarget(box);
   const gpu = box.gpu_name ?? "";

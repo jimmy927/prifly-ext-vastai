@@ -7,9 +7,9 @@
  * session) and the extension (in the prifly host) read and write, so every
  * change takes the lock and writes the file whole with a rename.
  *
- * A lease is booked for a label — `s-<session8>/<name>` — since the box does
- * not exist yet when it is booked; the extension binds it to the first box
- * with that label that it sees, and from then on it is that box's alone: a
+ * A lease is booked for a label — `<owner>/s-<session8>/<name>`, or the older
+ * `s-<session8>/<name>` — since the box does not exist yet when it is
+ * booked; the extension binds it to the first box with that label that it sees, and from then on it is that box's alone: a
  * later box under the same label does not inherit it.
  */
 
@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 
 export const LeaseSchema = z.object({
-  /** `s-<session8>/<name>`, as the box is (or will be) labelled. */
+  /** `<owner>/s-<session8>/<name>` (or the older `s-<session8>/<name>`), as the box is (or will be) labelled. */
   label: z.string(),
   /** The Vast.ai instance id, once the extension has seen the box; null before. */
   box: z.number().nullable(),

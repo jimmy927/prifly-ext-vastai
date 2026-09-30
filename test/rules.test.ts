@@ -1,10 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import type { Lease } from "../leases";
-import { BOOKING_MS, GRACE_MS, IDLE_NET_KIB, IdleWatch, judge, span } from "../rules";
+import {
+  BOOKING_MS,
+  GRACE_MS,
+  IDLE_NET_KIB,
+  IdleWatch,
+  isOwnBox,
+  judge,
+  type Mine,
+  ownerName,
+  parseLabel,
+  sessionLabel,
+  span,
+} from "../rules";
 
 const NOW = 1_800_000_000_000;
 const M = 60_000;
-const BOX = { id: 7, label: "s-0123abcd/lc-box1", startedAt: NOW - 60 * M };
+const BOX = { id: 7, label: "jimmy/s-0123abcd/lc-box1", startedAt: NOW - 60 * M };
+const MINE: Mine = { owner: "jimmy", sessions: ["0123abcd-1111-2222-3333-444455556666"] };
 const lease = (until: number, cancelled = false): Lease => ({
   label: BOX.label,
   box: 7,
@@ -21,34 +34,92 @@ describe("judge", () => {
       "rj-reranker:38596:48445",
       "project-odi/lc-box1",
       "s-XYZ/a",
+      "Jimmy/s-0123abcd/a",
+      "a-far-too-long-owner-name/s-0123abcd/a",
     ]) {
-      expect(judge({ ...BOX, label }, null, NOW)).toEqual({ kind: "unmanaged" });
+      expect(judge({ ...BOX, label }, null, NOW, MINE)).toEqual({ kind: "unmanaged" });
     }
   });
 
   test("a session's box without a lease gets only the booking window", () => {
-    expect(judge({ ...BOX, startedAt: NOW - M }, null, NOW)).toEqual({
+    expect(judge({ ...BOX, startedAt: NOW - M }, null, NOW, MINE)).toEqual({
       kind: "unbooked",
       leftMs: BOOKING_MS - M,
     });
-    expect(judge(BOX, null, NOW)).toEqual({ kind: "due", reason: "no lease" });
+    expect(judge(BOX, null, NOW, MINE)).toEqual({ kind: "due", reason: "no lease" });
   });
 
   test("a lease runs, ends, has its grace, then is due", () => {
-    expect(judge(BOX, lease(NOW + 60 * M), NOW)).toEqual({ kind: "leased", leftMs: 60 * M });
-    expect(judge(BOX, lease(NOW + 10 * M), NOW)).toEqual({ kind: "ending", leftMs: 10 * M });
-    expect(judge(BOX, lease(NOW - 5 * M), NOW)).toEqual({
+    expect(judge(BOX, lease(NOW + 60 * M), NOW, MINE)).toEqual({ kind: "leased", leftMs: 60 * M });
+    expect(judge(BOX, lease(NOW + 10 * M), NOW, MINE)).toEqual({ kind: "ending", leftMs: 10 * M });
+    expect(judge(BOX, lease(NOW - 5 * M), NOW, MINE)).toEqual({
       kind: "grace",
       leftMs: GRACE_MS - 5 * M,
     });
-    expect(judge(BOX, lease(NOW - GRACE_MS), NOW)).toEqual({ kind: "due", reason: "lease over" });
+    expect(judge(BOX, lease(NOW - GRACE_MS), NOW, MINE)).toEqual({
+      kind: "due",
+      reason: "lease over",
+    });
   });
 
   test("a cancelled lease is due at once", () => {
-    expect(judge(BOX, lease(NOW + 60 * M, true), NOW)).toEqual({
+    expect(judge(BOX, lease(NOW + 60 * M, true), NOW, MINE)).toEqual({
       kind: "due",
       reason: "cancelled",
     });
+  });
+});
+
+describe("labels", () => {
+  test("parses the owner form and the older one, which has no owner", () => {
+    expect(parseLabel("jimmy/s-0123abcd/lc-box1")).toEqual({
+      owner: "jimmy",
+      session: "0123abcd",
+      name: "lc-box1",
+    });
+    expect(parseLabel("s-0123abcd/lc-box1")).toEqual({
+      owner: null,
+      session: "0123abcd",
+      name: "lc-box1",
+    });
+    expect(parseLabel("project-odi/lc-box1")).toBeNull();
+    expect(sessionLabel("jimmy", "0123abcd-1111", "lc-box1")).toBe("jimmy/s-0123abcd/lc-box1");
+  });
+
+  test("an owner is lower-case, [a-z0-9_-] only, at most 16 characters", () => {
+    expect(ownerName("Jimmy")).toBe("jimmy");
+    expect(ownerName("jimmy.engelbrecht@artemis")).toBe("jimmyengelbrecht");
+    expect(ownerName("Build_Bot-2")).toBe("build_bot-2");
+    expect(ownerName("åäö")).toBe("");
+  });
+
+  test("a box is this owner's by its owner, or by the older label", () => {
+    expect(isOwnBox("jimmy/s-0123abcd/a", "jimmy")).toBe(true);
+    expect(isOwnBox("s-0123abcd/a", "jimmy")).toBe(true);
+    expect(isOwnBox("anna/s-0123abcd/a", "jimmy")).toBe(false);
+    expect(isOwnBox("lc-box3", "jimmy")).toBe(false);
+  });
+});
+
+describe("judge: whose box", () => {
+  test("another owner's box is never judged, whatever its lease", () => {
+    const theirs = { ...BOX, label: "anna/s-0123abcd/lc-box1" };
+    expect(judge(theirs, null, NOW, MINE)).toEqual({ kind: "foreign", owner: "anna" });
+    expect(judge(theirs, lease(NOW - GRACE_MS, true), NOW, MINE).kind).toBe("foreign");
+  });
+
+  test("a box of a session this prifly does not know is never due", () => {
+    const unknown = { ...BOX, label: "jimmy/s-99999999/lc-box1" };
+    expect(judge(unknown, null, NOW, MINE)).toEqual({ kind: "stranger", session: "99999999" });
+    expect(judge(unknown, lease(NOW - GRACE_MS, true), NOW, MINE).kind).toBe("stranger");
+    expect(judge(BOX, null, NOW, { ...MINE, sessions: [] }).kind).toBe("stranger");
+  });
+
+  test("the older label counts as this owner's, and still needs a known session", () => {
+    const legacy = { ...BOX, label: "s-0123abcd/lc-box1" };
+    expect(judge(legacy, null, NOW, MINE)).toEqual({ kind: "due", reason: "no lease" });
+    expect(judge(legacy, lease(NOW + 60 * M), NOW, MINE).kind).toBe("leased");
+    expect(judge({ ...legacy, label: "s-99999999/x" }, null, NOW, MINE).kind).toBe("stranger");
   });
 });
 

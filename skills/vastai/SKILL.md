@@ -18,25 +18,30 @@ honesty about the hardware.
 - **VAI-6 (MUST)** For a job under an hour, weigh time-to-ready over hourly price: the box pulls its Docker image on start. Require a decent `inet_down` when the job pulls a large image or dataset.
 
 ## Labels: which session owns a box
-- **VAI-7 (MUST)** Label every box with the session that rents it: `s-<first 8 characters of the session id>/<name>`. In a shell: `--label "s-${CLAUDE_CODE_SESSION_ID:0:8}/<name>"`. The prifly Vast.ai extension shows each box on that session, and boxes without such a label in the status bar as unclaimed.
-- **VAI-8 (KNOW)** Relabel with `vastai label instance <id> s-<8 chars>/<name>`. A box handed to another session gets that session's id.
+- **VAI-7 (MUST)** Label every box with its owner and the session that rents it: `<owner>/s-<first 8 characters of the session id>/<name>`, e.g. `jimmy/s-2b89f308/lc-box1`. The owner is the prifly's: `"owner"` in the extension's `config.json`, else `$USER`, lower-cased, `[a-z0-9_-]`, at most 16 characters. Do not build the label by hand: `vastlease book <name> <hours>` prints the exact `--label` to rent with. The prifly Vast.ai extension shows each box on that session, boxes without such a label in the status bar as unclaimed, and boxes of another owner (another prifly on the same Vast.ai account) in the status bar as that prifly's.
+- **VAI-8 (KNOW)** Relabel with `vastai label instance <id> <owner>/s-<8 chars>/<name>`. A box handed to another session gets that session's id; never give a box another owner's prefix, which hands it to that prifly. The older `s-<8 chars>/<name>` still counts as this prifly's owner during the change-over; new boxes get the owner form.
 - **VAI-9 (MUST)** Keep `<name>` to at most 8 characters, so short displays show it whole. Put what the box is for in your notes, not its name.
 
 ## Leases: how long a session may keep a box
-The prifly Vast.ai extension destroys a box labelled `s-<session>/<name>`
-that has no lease, or whose lease ended more than 15 minutes ago. Boxes with
-other labels (rented by hand, or by other software) are never touched. A box
+The prifly Vast.ai extension destroys a box labelled `<owner>/s-<session>/<name>`
+with its own owner (or the older `s-<session>/<name>`) that has no lease, or
+whose lease ended more than 15 minutes ago. Boxes with other labels (rented
+by hand, or by other software) are never touched, nor are boxes of another
+owner, nor boxes of a session this prifly does not know (it only warns: "not
+this prifly's session"). A box
 whose session stopped — a usage limit, a crash, prifly closed — cannot extend
 its lease, so it goes when the lease ends; each leased box also runs a guard
 (`/root/.lease/guard.sh`) that destroys it with the box's own key if prifly is
 not running then.
 
 ```bash
-vastlease book <name> <hours>     # BEFORE vastai create; at most 24 hours ahead
+vastlease book <name> <hours>     # BEFORE vastai create; at most 24 hours ahead; prints the --label
 vastlease extend <name> <hours>   # still working: add hours
 vastlease cancel <name>           # done: saved and destroyed within a minute
 vastlease list
 ```
+
+Each command takes the name, the whole label (either form) or the box id.
 
 - **VAI-L1 (MUST)** Book the lease before `vastai create`. A new box without one has 5 minutes before it is destroyed.
 - **VAI-L2 (MUST)** Book for the job's real length plus a margin, and extend while it runs; you are warned 15 minutes before the end. Cancel as soon as the work is done — an idle box inside its lease is only warned about, never destroyed.
@@ -52,9 +57,9 @@ Reading the marketplace needs no key.
 vastai show user                                   # credit, and whether an ssh key is registered
 vastai create ssh-key "$(cat ~/.ssh/<your_key>.pub)" -y
 vastai search offers 'rentable=true num_gpus>=1 reliability>0.98' -o 'dph_total'
-vastlease book <name> <hours>                      # the lease first (VAI-L1)
+vastlease book <name> <hours>                      # the lease first (VAI-L1); prints the label
 vastai create instance <offer> --image ubuntu:22.04 --disk 40 --ssh --direct \
-   --onstart-cmd 'sleep infinity' --cancel-unavail --label "s-${CLAUDE_CODE_SESSION_ID:0:8}/<name>"
+   --onstart-cmd 'sleep infinity' --cancel-unavail --label "<the label vastlease printed>"
 yes y | vastai destroy instance <id>               # destroy asks for confirmation
 ```
 

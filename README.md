@@ -84,20 +84,33 @@ flowchart LR
 
 ### Which session owns a box
 
-A box belongs to the session whose id starts its label:
+A box belongs to the session whose id starts its label, under this prifly's
+owner:
 
-    s-<first 8 characters of the session id>/<name>      e.g.  s-e5636c90/lc-box1
+    <owner>/s-<first 8 characters of the session id>/<name>   e.g.  jimmy/s-e5636c90/lc-box1
+
+The owner is `"owner"` in `config.json` if set, else `$USER`: lower-cased,
+only `[a-z0-9_-]`, at most 16 characters. It is there because a second prifly
+on another machine, using the same Vast.ai account, labels its boxes the same
+way; without an owner this one would see them as unleased and destroy them.
+The extension manages only boxes of its own owner. Another owner's box shows
+in the status bar, named `<owner>/<name>`, and is never enforced, destroyed
+or guarded.
 
 Every Claude Code shell has its session id in `$CLAUDE_CODE_SESSION_ID`, and
-prifly also puts the id in the system prompt of each session it runs. That
-lets a session label what it rents:
+prifly also puts the id in the system prompt of each session it runs.
+`vastlease book` reads the owner the way the extension does and prints the
+exact label to rent with:
 
-    vastai create instance … --label "s-${CLAUDE_CODE_SESSION_ID:0:8}/lc-box1"
-    vastai label instance <id> s-e5636c90/lc-box1      # later, or to hand a box over
+    vastlease book lc-box1 3            # … Rent it with exactly this label: --label "jimmy/s-e5636c90/lc-box1"
+    vastai create instance … --label "jimmy/s-e5636c90/lc-box1"
+    vastai label instance <id> jimmy/s-e5636c90/lc-box1      # later, or to hand a box over
 
-The name after the slash is at most 8 characters, so short displays show it
-whole. A box with any other label, or none, shows in the status bar marked
-`?`. A box nobody watches is still billing someone, so it stays visible.
+The name after the last slash is at most 8 characters, so short displays show
+it whole. The older label `s-<session8>/<name>`, with no owner, still counts
+as this prifly's owner during the change-over. A box with any other label, or
+none, shows in the status bar marked `?`. A box nobody watches is still
+billing someone, so it stays visible.
 
 ### The display: `index.ts`
 
@@ -133,7 +146,8 @@ whole. A box with any other label, or none, shows in the status bar marked
 
 ### Leases: `leases.ts`, `rules.ts`, `enforce.ts`, `guard.sh`, `vastlease`
 
-A session's box (labelled `s-<session8>/<name>`) must hold a lease: how long
+A session's box (labelled `<owner>/s-<session8>/<name>` with this prifly's
+owner, or the older `s-<session8>/<name>`) must hold a lease: how long
 the session booked it for. On 2026-09-28 two boxes sat idle for 24 hours
 because the session that rented them hit its usage limit, and the only check
 on them ran inside that session. A lease runs out on its own, so a stopped
@@ -141,10 +155,15 @@ session no longer keeps a box.
 
 - **Booking.** `vastlease` (in `bin/`, on every session's PATH) books a lease
   for a label before the box is rented, extends it, cancels it, and lists
-  them. Leases are kept in `leases.json` in this folder, under a lock.
+  them. Leases are kept in `leases.json` in this folder, under a lock. Each
+  command takes a name, a whole label (either form) or the box id; `book`
+  prints the `--label` to rent with.
 - **The rules** (once a minute):
   - A box labelled another way is never touched: boxes rented by hand, or by
-    other software, have their own clean-up.
+    other software, have their own clean-up. Nor is a box of another owner.
+  - A box whose session this prifly does not know (`api.sessions()`, which
+    includes past sessions) is only warned about once, "not this prifly's
+    session": never destroyed and never guarded, whatever its lease says.
   - A session's box with no lease is destroyed 5 minutes after it starts.
   - 15 minutes before a lease ends, the reader is told. 15 minutes after it
     ended, the box is saved and destroyed. `vastlease cancel` does that at once.
@@ -196,8 +215,9 @@ A key that changes later is still refused.
 4. The session shows those ten with prifly's `mcp__prifly__pick` tool. The
    table appears in the dialog you are still looking at (and in the
    session's transcript), with a **Rent** button.
-5. The session rents the row you chose with `--cancel-unavail`, labels it
-   with its own id, and tells you how to reach it. If you choose none, it
+5. The session books the lease, rents the row you chose with
+   `--cancel-unavail`, labels it with the `<owner>/s-<session8>/<name>` that
+   `vastlease book` printed, and tells you how to reach it. If you choose none, it
    asks what to change and searches again.
 
 ### Renting from a chat
@@ -277,7 +297,7 @@ This extension uses all of them except `bin`:
       "label": "Rent a Vast.ai machine…",
       "icon": "server",
       "input": { "title": "What do you need the machine for?", "placeholder": "e.g. …" },
-      "prompt": "Rent a Vast.ai machine for this request: {input} … label it s-{session8}/<name> …"
+      "prompt": "Rent a Vast.ai machine for this request: {input} … label it <owner>/s-{session8}/<name> …"
     }
   ]
 }
@@ -517,4 +537,5 @@ prompt, or your skill.
 | `skills/vastai/SKILL.md` | The Claude Code skill: renting, labelling, cleanup |
 | `.claude-plugin/plugin.json`, `marketplace.json` | Makes the folder a Claude Code plugin, and installable without prifly |
 | `pyproject.toml`, `uv.lock` | Pins the `vastai` CLI; prifly builds the `.venv` from them |
-| `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, and `vastai` to use another CLI |
+| `owner.ts` | The label owner, from `config.json` or `$USER`, for the extension and `vastlease` alike |
+| `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, `owner` (else `$USER`), and `vastai` to use another CLI |

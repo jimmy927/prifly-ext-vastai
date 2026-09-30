@@ -13,6 +13,10 @@
  *
  * With `enforce` off (the default) nothing is destroyed and no guard is
  * installed: every step is only said — "would destroy lc-box3".
+ *
+ * Only this owner's boxes are acted on, and only those of a session the host
+ * knows (`api.sessions()`, past ones too): another owner's box is left alone,
+ * and one of an unknown session is told about once, never destroyed or guarded.
  */
 
 import { join } from "node:path";
@@ -22,16 +26,22 @@ import {
   GRACE_MS,
   IDLE_MS,
   IdleWatch,
-  isSessionBox,
   judge,
-  SESSION_LABEL,
+  type Mine,
+  parseLabel,
   span,
   type Verdict,
 } from "./rules";
 import { onBox, sshTarget, vastai } from "./run";
 import type { Instance } from "./vast-api";
 
-export type EnforceConfig = { vastai: string; sshKey: string | null; enforce: boolean };
+export type EnforceConfig = {
+  vastai: string;
+  sshKey: string | null;
+  enforce: boolean;
+  /** The label owner this prifly manages: see `owner.ts`. */
+  owner: string;
+};
 
 /** What the chips show of each box: its verdict, and how long it has been idle. */
 export type Judged = { verdict: Verdict; idleMs: number; until: number | null };
@@ -79,6 +89,7 @@ export class Enforcer {
       });
     }
     this.#idle.keep(new Set(known.map((box) => box.id)));
+    const mine = this.#mine();
     const judged = new Map<number, Judged>();
     for (const box of boxes) {
       if (box.id === undefined) continue;
@@ -92,17 +103,33 @@ export class Enforcer {
         },
         lease,
         now,
+        mine,
       );
       const idleMs = this.#idle.observe(box.id, loadOf(box), now);
       judged.set(box.id, { verdict, idleMs, until: lease?.until ?? null });
-      if (isSessionBox(label)) await this.#act(box, box.id, verdict, idleMs, lease?.until ?? null);
+      await this.#act(box, box.id, verdict, idleMs, lease?.until ?? null);
     }
     return judged;
   }
 
+  /** This prifly's owner and every session its host knows, read afresh each time. */
+  #mine(): Mine {
+    return { owner: this.#config.owner, sessions: this.#api.sessions().map((s) => s.id) };
+  }
+
   async #act(box: Instance, id: number, verdict: Verdict, idleMs: number, until: number | null) {
+    if (verdict.kind === "unmanaged" || verdict.kind === "foreign") return;
     const name = nameOf(box);
-    const session = SESSION_LABEL.exec(box.label ?? "")?.[1];
+    if (verdict.kind === "stranger") {
+      this.#tell(
+        `${id}:stranger`,
+        `${name} is labelled for session ${verdict.session}, which is not this prifly's session: it is never destroyed here.`,
+        "warning",
+        undefined,
+      );
+      return;
+    }
+    const session = parseLabel(box.label ?? "")?.session;
     const tell = (key: string, text: string, tone: DecorationTone) =>
       this.#tell(`${id}:${key}`, text, tone, session);
     switch (verdict.kind) {
@@ -220,7 +247,13 @@ export class Enforcer {
   async #stillDue(box: Instance, id: number): Promise<boolean> {
     const lease = leaseOf(await readLeases(this.#file), id, box.label ?? "");
     const startedAt = box.start_date === undefined ? null : box.start_date * 1000;
-    return judge({ id, label: box.label ?? "", startedAt }, lease, Date.now()).kind === "due";
+    const verdict = judge(
+      { id, label: box.label ?? "", startedAt },
+      lease,
+      Date.now(),
+      this.#mine(),
+    );
+    return verdict.kind === "due";
   }
 
   /** Install the on-box guard if need be, and give it the lease's end. */
@@ -256,7 +289,7 @@ export class Enforcer {
 }
 
 function nameOf(box: Instance): string {
-  return SESSION_LABEL.exec(box.label ?? "")?.[2] ?? `#${box.id ?? "?"}`;
+  return parseLabel(box.label ?? "")?.name ?? `#${box.id ?? "?"}`;
 }
 
 function loadOf(box: Instance) {
