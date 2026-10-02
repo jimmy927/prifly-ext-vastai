@@ -24,6 +24,7 @@ const lease = (until: number, cancelled = false): Lease => ({
   bookedAt: NOW - 120 * M,
   until,
   cancelled,
+  budget: null,
 });
 
 describe("judge", () => {

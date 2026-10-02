@@ -1,4 +1,4 @@
-/** Running things: the `vastai` CLI here, and commands on a box over ssh. */
+/** Running things: commands on a box over ssh. */
 
 import type { Instance } from "./vast-api";
 
@@ -19,15 +19,6 @@ export async function run(argv: string[], timeoutMs: number, stdin?: string): Pr
   ]);
   clearTimeout(timeout);
   return { code, out, err };
-}
-
-/** Run the CLI; its stdout, or an error with the end of what it said. */
-export async function vastai(cli: string, args: string[]): Promise<string> {
-  const { code, out, err } = await run([cli, ...args], 30_000);
-  if (code !== 0) {
-    throw new Error(`vastai ${args[0] ?? ""} failed (${code}): ${err.trim().slice(0, 200)}`);
-  }
-  return out;
 }
 
 /** Where to ssh to a box: only a running one with an address has somewhere. */

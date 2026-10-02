@@ -15,6 +15,9 @@
  * first and books right after. A lease that runs out gets `GRACE_MS` to be
  * extended, and then the box is saved and destroyed. Idleness inside a lease
  * is only ever warned about: the lease is what the session asked for.
+ *
+ * A lease may carry a dollar budget, the amount the reader confirmed. A box
+ * that has cost that much is due at once, whatever its lease says.
  */
 
 import type { Lease } from "./leases";
@@ -70,10 +73,15 @@ export type Verdict =
   | { kind: "leased"; leftMs: number }
   | { kind: "ending"; leftMs: number }
   | { kind: "grace"; leftMs: number }
-  | { kind: "due"; reason: "no lease" | "lease over" | "cancelled" };
+  | { kind: "due"; reason: "no lease" | "lease over" | "cancelled" | "budget reached" };
 
-/** What the rules need to know of a box. */
-export type BoxFacts = { id: number; label: string; startedAt: number | null };
+/** What the rules need to know of a box; `spent` is what it has cost, in dollars, when known. */
+export type BoxFacts = {
+  id: number;
+  label: string;
+  startedAt: number | null;
+  spent?: number | null;
+};
 
 /** A session's box of this owner: labelled with it, or with the older label that has none. */
 export function isOwnBox(label: string, owner: string): boolean {
@@ -111,6 +119,9 @@ function leaseVerdict(box: BoxFacts, lease: Lease | null, now: number): Verdict 
       : { kind: "due", reason: "no lease" };
   }
   if (lease.cancelled) return { kind: "due", reason: "cancelled" };
+  if (lease.budget !== null && (box.spent ?? 0) >= lease.budget) {
+    return { kind: "due", reason: "budget reached" };
+  }
   const left = lease.until - now;
   if (left > ENDING_MS) return { kind: "leased", leftMs: left };
   if (left > 0) return { kind: "ending", leftMs: left };

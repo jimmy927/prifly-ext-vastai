@@ -10,6 +10,7 @@ import {
   leaseOf,
   leasesPath,
   MAX_AHEAD_MS,
+  raiseBudget,
   readLeases,
   tidy,
   UNUSED_BOOKING_MS,
@@ -29,12 +30,20 @@ describe("book", () => {
       bookedAt: NOW,
       until: NOW + 2 * H,
       cancelled: false,
+      budget: null,
     });
     expect(leases).toEqual([result]);
   });
 
   test("booking a label again replaces its unused booking, not a bound lease", () => {
-    const bound: Lease = { label: LABEL, box: 7, bookedAt: 0, until: NOW, cancelled: false };
+    const bound: Lease = {
+      label: LABEL,
+      box: 7,
+      bookedAt: 0,
+      until: NOW,
+      cancelled: false,
+      budget: null,
+    };
     const first = book([bound], LABEL, 1, NOW).leases;
     const { leases } = book(first, LABEL, 3, NOW);
     expect(leases).toHaveLength(2);
@@ -48,7 +57,14 @@ describe("book", () => {
 });
 
 describe("extend", () => {
-  const lease: Lease = { label: LABEL, box: 7, bookedAt: NOW, until: NOW + H, cancelled: false };
+  const lease: Lease = {
+    label: LABEL,
+    box: 7,
+    bookedAt: NOW,
+    until: NOW + H,
+    cancelled: false,
+    budget: null,
+  };
 
   test("adds to a running lease", () => {
     expect(extend([lease], { box: 7 }, 2, NOW).result.until).toBe(NOW + 3 * H);
@@ -68,6 +84,7 @@ describe("extend", () => {
       bookedAt: NOW,
       until: NOW + H,
       cancelled: false,
+      budget: null,
     });
   });
 
@@ -80,7 +97,14 @@ describe("extend", () => {
 
 describe("cancel", () => {
   test("marks a bound lease cancelled and drops an unused booking", () => {
-    const bound: Lease = { label: LABEL, box: 7, bookedAt: NOW, until: NOW + H, cancelled: false };
+    const bound: Lease = {
+      label: LABEL,
+      box: 7,
+      bookedAt: NOW,
+      until: NOW + H,
+      cancelled: false,
+      budget: null,
+    };
     expect(cancel([bound], { box: 7 }).leases).toEqual([{ ...bound, cancelled: true }]);
     const booked = book([], "s-0123abcd/b", 1, NOW).leases;
     expect(cancel(booked, { label: "s-0123abcd/b" }).leases).toEqual([]);
@@ -101,7 +125,14 @@ describe("tidy", () => {
   });
 
   test("drops leases whose box is gone and bookings never used", () => {
-    const gone: Lease = { label: LABEL, box: 5, bookedAt: NOW, until: NOW + H, cancelled: false };
+    const gone: Lease = {
+      label: LABEL,
+      box: 5,
+      bookedAt: NOW,
+      until: NOW + H,
+      cancelled: false,
+      budget: null,
+    };
     const stale = book([], "s-0123abcd/old", 1, NOW - UNUSED_BOOKING_MS - 1).result;
     const fresh = book([], "s-0123abcd/new", 1, NOW).result;
     const tidied = tidy([gone, stale, fresh], [], NOW);
@@ -109,7 +140,14 @@ describe("tidy", () => {
   });
 
   test("says nothing changed when nothing did", () => {
-    const bound: Lease = { label: LABEL, box: 5, bookedAt: NOW, until: NOW + H, cancelled: false };
+    const bound: Lease = {
+      label: LABEL,
+      box: 5,
+      bookedAt: NOW,
+      until: NOW + H,
+      cancelled: false,
+      budget: null,
+    };
     expect(tidy([bound], [{ id: 5, label: LABEL }], NOW).changed).toBe(false);
   });
 });
@@ -122,4 +160,36 @@ test("updateLeases writes the file whole, under the lock, in parallel", async ()
     ),
   );
   expect(await readLeases(path)).toHaveLength(20);
+});
+
+describe("budget", () => {
+  test("a booking carries the confirmed budget, and an older file reads as none", async () => {
+    expect(book([], LABEL, 2, NOW, 7.5).result.budget).toBe(7.5);
+    const folder = await mkdtemp(join(tmpdir(), "vastai-leases-"));
+    const path = leasesPath(folder);
+    // A lease written before budgets existed has no `budget` key.
+    await Bun.write(
+      path,
+      JSON.stringify({
+        leases: [{ label: LABEL, box: 7, bookedAt: NOW, until: NOW + H, cancelled: false }],
+      }),
+    );
+    expect((await readLeases(path))[0]?.budget).toBeNull();
+  });
+
+  test("raiseBudget sets the confirmed amount and keeps the rest", () => {
+    const lease: Lease = {
+      label: LABEL,
+      box: 7,
+      bookedAt: NOW,
+      until: NOW + H,
+      cancelled: false,
+      budget: 5,
+    };
+    const { leases, result } = raiseBudget([lease], { box: 7 }, 12.5);
+    expect(result).toEqual({ ...lease, budget: 12.5 });
+    expect(leases).toEqual([result]);
+    expect(() => raiseBudget([lease], { box: 8 }, 1)).toThrow("No lease");
+    expect(() => raiseBudget([lease], { box: 7 }, 0)).toThrow("Not a budget");
+  });
 });

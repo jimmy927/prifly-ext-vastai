@@ -1,7 +1,7 @@
 {
   "name": "vastai",
-  "description": "Renting Vast.ai boxes without surprise bills, and labelling each with the session that rents it (s-<session id>/<name>) so prifly can show it there.",
-  "version": "0.4.0",
+  "description": "Renting Vast.ai boxes through budgeted tools instead of the CLI, with a hook that refuses the CLI, and the skills for the rest.",
+  "version": "0.7.0",
   "author": {
     "name": "Jimmy Engelbrecht"
   },

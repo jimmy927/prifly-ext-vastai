@@ -1,0 +1,17 @@
+{
+  "description": "Refuses the vastai CLI and raw writes to Vast.ai's API: sessions rent, extend, cancel and inspect boxes with the vast_* tools.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/vast-guard.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

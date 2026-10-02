@@ -102,6 +102,62 @@ export type ExtensionMachine = {
   actions?: DecorationAction[];
 };
 
+/** An amount the reader confirms with the row (a rental's budget). */
+export type PickAmount = {
+  /** "Budget for this rental" */
+  label: string;
+  /** "$" */
+  prefix: string;
+  /** The session's suggestion; the reader may change it. */
+  value: number;
+  /** One line under the field: how the suggestion was made, what it means. */
+  hint: string;
+  /**
+   * Recompute one column from the amount as the reader types: each row's
+   * `column` cell becomes `amount / Number(row[rateColumn])` with `unit`,
+   * and its header "Hours in <prefix><amount>".
+   */
+  perRow?: { column: string; rateColumn: string; unit: string };
+};
+
+/** What an extension tool asks the reader: prifly's pick card, optionally with an amount. */
+export type ExtensionPick = {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  /** The button's word, default "Choose". */
+  action?: string;
+  amount?: PickAmount;
+};
+
+/** The reader's answer: the row and, when the pick had one, the amount they confirmed. Null: none of these. */
+export type ExtensionPickAnswer = { row: number; amount: number | null } | null;
+
+export type ExtensionToolContext = {
+  /** The full id of the session that called the tool. */
+  session: string;
+  /** Show a pick card in that session and wait for the reader. */
+  pick(request: ExtensionPick): Promise<ExtensionPickAnswer>;
+  /** Aborted when the session or the call goes away. */
+  signal: AbortSignal;
+};
+
+export type ExtensionTool = {
+  /** `^[a-z][a-z0-9_]{0,47}$`; the session sees it as `mcp__prifly__<name>`. */
+  name: string;
+  description: string;
+  /** A JSON Schema object for the arguments. */
+  inputSchema: Record<string, unknown>;
+  /** The text the tool returns. A throw is returned as an MCP tool error with its message. */
+  call(args: Record<string, unknown>, ctx: ExtensionToolContext): Promise<string>;
+};
+
+/** Added to `ExtensionApi`. Absent on an older prifly: call it as `api.tools?.register(...)`. */
+export type ExtensionToolsApi = {
+  /** Replace every tool this extension serves. A name another extension or prifly owns is refused and logged. */
+  register(tools: ExtensionTool[]): void;
+};
+
 export type ExtensionApi = {
   /**
    * Replace everything this extension shows. `bySession` is keyed by a
@@ -127,6 +183,12 @@ export type ExtensionApi = {
    * Absent on a prifly host older than "notify" — call it as `api.notify?.(…)`.
    */
   notify?(text: string, options?: { tone?: DecorationTone; session?: string }): void;
+  /**
+   * Serve MCP tools to every session prifly runs, as `mcp__prifly__<name>`.
+   * Absent on a prifly host older than "extension tools": call it as
+   * `api.tools?.register(...)`; without it the extension is still a box display.
+   */
+  tools?: ExtensionToolsApi;
   /** The sessions on this machine the host knows now. */
   sessions(): ExtensionSession[];
   /** A line in the host's log, under `ext.<id>.<event>`. */
@@ -135,9 +197,8 @@ export type ExtensionApi = {
   folder: string;
   /**
    * The folders its programs are in, first on the PATH of every session
-   * prifly runs: its manifest's `bin`, and the `bin` of the `.venv` prifly
-   * builds from its `pyproject.toml` and `uv.lock` (prifly brings uv and the
-   * Python; the extension ships neither).
+   * prifly runs: its manifest's `bin`, and the `bin` of a `.venv` prifly
+   * builds from a `pyproject.toml` and `uv.lock`. This extension ships none.
    */
   paths: readonly string[];
 };

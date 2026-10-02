@@ -1,11 +1,12 @@
 /**
- * Leases: how long a session has booked a box for.
+ * Leases: how long a session has booked a box for, and what it may cost.
  *
- * A session books a lease with `vastlease book <name> <hours>` before it rents
- * the box, extends it, and cancels it when it is done. They are kept in
- * `leases.json` in the extension's folder, which both `vastlease` (in a
- * session) and the extension (in the prifly host) read and write, so every
- * change takes the lock and writes the file whole with a rename.
+ * A session's `vast_rent` books a lease before it rents the box; `vast_extend`
+ * extends it and `vast_cancel` ends it (`tools.ts`). They are kept in
+ * `leases.json` in the extension's folder, which the tools and the enforcer
+ * (both in the prifly host) read and write, so every change takes the lock and
+ * writes the file whole with a rename. A lease carries the dollar budget the
+ * reader confirmed for the rental, or null on a lease older than budgets.
  *
  * A lease is booked for a label — `<owner>/s-<session8>/<name>`, or the older
  * `s-<session8>/<name>` — since the box does not exist yet when it is
@@ -28,6 +29,8 @@ export const LeaseSchema = z.object({
   until: z.number(),
   /** The session asked for it to end now: save and destroy at once. */
   cancelled: z.boolean(),
+  /** Dollars the reader confirmed for this rental: the box is saved and destroyed when it has cost this much. Null: none. */
+  budget: z.number().nullable().default(null),
 });
 export type Lease = z.infer<typeof LeaseSchema>;
 
@@ -130,14 +133,16 @@ function capped(until: number, now: number): number {
 }
 
 /**
- * Book `hours` for a box not rented yet, by the label it will carry. Booking
- * a label again replaces its unused booking.
+ * Book `hours` for a box not rented yet, by the label it will carry, with the
+ * dollars the reader confirmed. Booking a label again replaces its unused
+ * booking.
  */
 export function book(
   leases: readonly Lease[],
   label: string,
   hours: number,
   now: number,
+  budget: number | null = null,
 ): { leases: Lease[]; result: Lease } {
   const lease: Lease = {
     label,
@@ -145,6 +150,7 @@ export function book(
     bookedAt: now,
     until: capped(now + hoursOf(hours), now),
     cancelled: false,
+    budget,
   };
   const others = leases.filter((l) => !(l.box === null && l.label === label));
   return { leases: [...others, lease], result: lease };
@@ -166,11 +172,36 @@ export function extend(
   if (found === null && adopt === undefined) throw new Error("No lease for that box");
   const from = found === null ? now : Math.max(found.until, now);
   const lease: Lease = {
-    ...(found ?? { ...(adopt ?? { box: null, label: "" }), bookedAt: now }),
+    ...(found ?? { ...(adopt ?? { box: null, label: "" }), bookedAt: now, budget: null }),
     until: capped(from + hoursOf(hours), now),
     cancelled: false,
   };
   return { leases: [...leases.filter((l) => l !== found), lease], result: lease };
+}
+
+/**
+ * Set a lease's budget to what the reader confirmed. Called "raise" because a
+ * session only asks for more; the confirmed amount is the reader's word, so a
+ * lower one is kept as typed.
+ */
+export function raiseBudget(
+  leases: readonly Lease[],
+  target: LeaseTarget,
+  dollars: number,
+): { leases: Lease[]; result: Lease } {
+  if (!Number.isFinite(dollars) || dollars <= 0) throw new Error(`Not a budget: ${dollars}`);
+  const found = find(leases, target);
+  if (found === null) throw new Error("No lease for that box");
+  const lease = { ...found, budget: dollars };
+  return { leases: [...leases.filter((l) => l !== found), lease], result: lease };
+}
+
+/** Drop a booking nothing was rented for. */
+export function dropBooking(
+  leases: readonly Lease[],
+  label: string,
+): { leases: Lease[]; result: null } {
+  return { leases: leases.filter((l) => !(l.box === null && l.label === label)), result: null };
 }
 
 /** End a lease now: the extension saves the box and destroys it; an unused booking is dropped. */

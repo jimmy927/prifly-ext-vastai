@@ -2,7 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listInstances, parsePage, readApiKeys } from "../vast-api";
+import {
+  createInstance,
+  destroyInstance,
+  KeyRefused,
+  listInstances,
+  OfferGone,
+  parsePage,
+  readApiKeys,
+  requestLogs,
+  withKeys,
+} from "../vast-api";
 
 /** A recorded `GET /api/v1/instances/` page, ids, labels and hosts replaced. */
 const recorded: unknown = await Bun.file(join(import.meta.dir, "instances-page.json")).json();
@@ -129,5 +139,105 @@ describe("readApiKeys", () => {
 
   test("none anywhere is an empty list", async () => {
     expect(await readApiKeys({}, await mkdtemp(join(tmpdir(), "vastai-keys-")))).toEqual([]);
+  });
+});
+
+/** A fake Vast.ai that records each request and answers from a queue. */
+function recording(...answers: Response[]) {
+  const seen: { url: string; init: RequestInit }[] = [];
+  const get = async (url: string, init: RequestInit) => {
+    seen.push({ url, init });
+    return answers.shift() ?? new Response("{}", { status: 500 });
+  };
+  return { seen, get };
+}
+
+describe("destroyInstance", () => {
+  test("is a DELETE of the instance with the bearer key, as guard.sh sends it", async () => {
+    const { seen, get } = recording(new Response("{}"));
+    await destroyInstance("secret", 52099850, get);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://console.vast.ai/api/v0/instances/52099850/");
+    expect(seen[0]?.init.method).toBe("DELETE");
+    expect(new Headers(seen[0]?.init.headers).get("Authorization")).toBe("Bearer secret");
+  });
+
+  test("a refusal says why, without the key", async () => {
+    const { get } = recording(
+      new Response(JSON.stringify({ msg: "no such instance" }), { status: 404 }),
+    );
+    const failure = await destroyInstance("secret", 1, get).catch((e: Error) => e);
+    expect((failure as Error).message).toBe("Vast.ai destroy of #1 failed (404): no such instance");
+  });
+
+  test("a refused key moves on to the next with withKeys", async () => {
+    const { seen, get } = recording(new Response("{}", { status: 401 }), new Response("{}"));
+    await withKeys(["old", "new"], (key) => destroyInstance(key, 5, get));
+    expect(seen.map((r) => new Headers(r.init.headers).get("Authorization"))).toEqual([
+      "Bearer old",
+      "Bearer new",
+    ]);
+    await expect(
+      destroyInstance("k", 5, recording(new Response("{}", { status: 403 })).get),
+    ).rejects.toBeInstanceOf(KeyRefused);
+  });
+});
+
+describe("createInstance", () => {
+  const request = {
+    image: "ubuntu:22.04",
+    disk: 40,
+    label: "jimmy/s-0123abcd/lc-box1",
+    onstart: "sleep infinity",
+    env: { "-p 8080:8080/tcp": "1" },
+  };
+
+  test("PUTs the CLI's body to the offer, with cancel_unavail, and returns the new id", async () => {
+    const { seen, get } = recording(
+      new Response(JSON.stringify({ success: true, new_contract: 77 })),
+    );
+    expect(await createInstance("secret", 4242, request, get)).toBe(77);
+    expect(seen[0]?.url).toBe("https://console.vast.ai/api/v0/asks/4242/");
+    expect(seen[0]?.init.method).toBe("PUT");
+    const body = JSON.parse(String(seen[0]?.init.body));
+    expect(body).toMatchObject({
+      image: "ubuntu:22.04",
+      disk: 40,
+      label: request.label,
+      onstart: "sleep infinity",
+      cancel_unavail: true,
+      runtype: "ssh_direc ssh_proxy",
+      env: { "-p 8080:8080/tcp": "1" },
+    });
+  });
+
+  test("an offer that is gone is OfferGone; a server error is not", async () => {
+    const gone = recording(
+      new Response(JSON.stringify({ success: false, msg: "offer unavailable" })),
+    );
+    await expect(createInstance("k", 1, request, gone.get)).rejects.toBeInstanceOf(OfferGone);
+    const taken = recording(
+      new Response(JSON.stringify({ msg: "no longer available" }), { status: 400 }),
+    );
+    await expect(createInstance("k", 1, request, taken.get)).rejects.toBeInstanceOf(OfferGone);
+    const broken = recording(new Response("oops", { status: 502 }));
+    const failure = await createInstance("k", 1, request, broken.get).catch((e: Error) => e);
+    expect(failure).not.toBeInstanceOf(OfferGone);
+  });
+});
+
+describe("requestLogs", () => {
+  test("asks, then fetches the returned address without the key", async () => {
+    const { seen, get } = recording(
+      new Response(JSON.stringify({ result_url: "https://logs.example/x" })),
+      new Response("not yet", { status: 404 }),
+      new Response("line1\nline2"),
+    );
+    expect(await requestLogs("secret", 9, 50, get, async () => undefined)).toBe("line1\nline2");
+    expect(seen[0]?.url).toBe("https://console.vast.ai/api/v0/instances/request_logs/9/");
+    expect(seen[0]?.init.method).toBe("PUT");
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ tail: "50" });
+    expect(seen[1]?.url).toBe("https://logs.example/x");
+    expect(new Headers(seen[1]?.init.headers).get("Authorization")).toBeNull();
   });
 });

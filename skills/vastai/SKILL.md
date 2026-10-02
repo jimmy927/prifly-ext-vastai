@@ -1,6 +1,6 @@
 ---
 name: vastai
-description: Renting compute on Vast.ai without surprise bills. Use when searching, pricing, renting, labelling, debugging or destroying a Vast.ai box for a CPU or GPU job - how the marketplace and billing work, why core counts lie, how to label a box so prifly shows it on the session that rented it, and the create and ssh traps that leave you paying for nothing.
+description: Renting compute on Vast.ai without surprise bills. Use when searching, pricing, renting, labelling, debugging or destroying a Vast.ai box for a CPU or GPU job - how the marketplace and billing work, why core counts lie, how the vast_* tools rent a box under a budget the reader confirms and label it so prifly shows it on the session that rented it, and the create and ssh traps that leave you paying for nothing.
 ---
 
 # Vast.ai
@@ -10,66 +10,60 @@ rent a slice by the second. Quality varies from host to host, and so does
 honesty about the hardware.
 
 ## Money
-- **VAI-1 (MUST NOT)** Never create, rent or destroy an instance without the user's explicit go-ahead for that specific box. Renting spends real money.
+- **VAI-1 (MUST NOT)** Never rent, extend past its budget or destroy a box except through the `vast_*` tools. `vast_rent` shows the reader the offers and the budget on a card and waits; renting spends real money, and the amount the reader confirms is the box's hard limit. The plugin's hook refuses `vastai create`, `destroy`, `label` and the other writing commands, `vastlease`, and `curl -X PUT|POST|DELETE` to console.vast.ai, and names the tool to use.
 - **VAI-2 (KNOW)** Billing is per second while running, disk only while stopped, nothing after destroy. No minimum period.
-- **VAI-3 (MUST)** Tear down with `destroy`, never `stop`: a stopped instance keeps billing for its disk.
-- **VAI-4 (MUST)** Before starting several boxes, check `vastai show user --raw` for `balance` and keep it above the whole job's budget. When the balance drops below the account's `balance_threshold`, Vast stops every instance on the account at once, unrelated ones included, and stopped boxes still bill disk.
-- **VAI-5 (MUST)** Run `vastai show instances` at the start and end of any rental work. A box nobody claims is a bill nobody is watching: claim it (VAI-8) or, with the user's go-ahead, destroy it.
-- **VAI-6 (MUST)** For a job under an hour, weigh time-to-ready over hourly price: the box pulls its Docker image on start. Require a decent `inet_down` when the job pulls a large image or dataset.
+- **VAI-3 (MUST)** Tear down with `vast_cancel`, never by stopping: a stopped instance keeps billing for its disk. `vast_cancel` saves the box (VAI-L3) and destroys it within a minute.
+- **VAI-4 (MUST)** Before starting several boxes, check `vastai show user --raw` for `balance` and keep it above the sum of the budgets. When the balance drops below the account's `balance_threshold`, Vast stops every instance on the account at once, unrelated ones included, and stopped boxes still bill disk.
+- **VAI-5 (MUST)** Call `vast_boxes` at the start and end of any rental work (`vastai show instances` lists every box on the account, read-only). A box nobody claims is a bill nobody is watching: tell the reader, who can keep or destroy it from its menu in prifly.
+- **VAI-6 (MUST)** For a job under an hour, weigh time-to-ready over hourly price: the box pulls its Docker image on start. Require a decent `inet_down` (`min_inet_down_mbps` in `vast_offers`) when the job pulls a large image or dataset.
+- **VAI-B1 (MUST)** Suggest `vast_rent`'s budget from the job: its real length times the rate (the rate includes the disk), plus a margin, and say in `purpose` how you got it; the card shows that sentence under the amount. The reader may change the amount. The box is saved and destroyed when it has cost the confirmed amount, so a budget too small ends the job early.
+- **VAI-B2 (KNOW)** The budget counts the hourly rate only: per-GB bandwidth charges some hosts add are not in it.
+- **VAI-B3 (KNOW)** `vast_extend` is free while the box's cost to the new end stays within its budget; past that the reader is asked to raise the budget, and the box is extended only as far as the amount they confirm allows.
 
 ## Labels: which session owns a box
-- **VAI-7 (MUST)** Label every box with its owner and the session that rents it: `<owner>/s-<first 8 characters of the session id>/<name>`, e.g. `jimmy/s-2b89f308/lc-box1`. The owner is the prifly's: `"owner"` in the extension's `config.json`, else `$USER`, lower-cased, `[a-z0-9_-]`, at most 16 characters. Do not build the label by hand: `vastlease book <name> <hours>` prints the exact `--label` to rent with. The prifly Vast.ai extension shows each box on that session, boxes without such a label in the status bar as unclaimed, and boxes of another owner (another prifly on the same Vast.ai account) in the status bar as that prifly's.
-- **VAI-8 (KNOW)** Relabel with `vastai label instance <id> <owner>/s-<8 chars>/<name>`. A box handed to another session gets that session's id; never give a box another owner's prefix, which hands it to that prifly. The older `s-<8 chars>/<name>` still counts as this prifly's owner during the change-over; new boxes get the owner form.
-- **VAI-9 (MUST)** Keep `<name>` to at most 8 characters, so short displays show it whole. Put what the box is for in your notes, not its name.
+- **VAI-7 (KNOW)** Every box is labelled with its owner and the session that rents it: `<owner>/s-<first 8 characters of the session id>/<name>`, e.g. `jimmy/s-2b89f308/lc-box1`. `vast_rent` builds it from the `name` you give; never build one by hand. The prifly Vast.ai extension shows each box on that session, boxes without such a label in the status bar as unclaimed, and boxes of another owner (another prifly on the same Vast.ai account) as that prifly's. The tools act only on this session's boxes.
+- **VAI-8 (KNOW)** A label cannot be changed from a session. A box another session rented is that session's: ask the reader if it is to be handed over. Boxes without a session label (rented by hand or by other software) are never touched by the extension.
+- **VAI-9 (MUST)** Keep `name` to at most 8 characters (the tool refuses longer), so short displays show it whole. Put what the box is for in `purpose` or your notes, not its name.
 
 ## Leases: how long a session may keep a box
 The prifly Vast.ai extension destroys a box labelled `<owner>/s-<session>/<name>`
-with its own owner (or the older `s-<session>/<name>`) that has no lease, or
-whose lease ended more than 15 minutes ago. Boxes with other labels (rented
-by hand, or by other software) are never touched, nor are boxes of another
-owner, nor boxes of a session this prifly does not know (it only warns: "not
-this prifly's session"). A box
-whose session stopped — a usage limit, a crash, prifly closed — cannot extend
-its lease, so it goes when the lease ends; each leased box also runs a guard
-(`/root/.lease/guard.sh`) that destroys it with the box's own key if prifly is
-not running then.
+with its own owner that has no lease, whose lease ended more than 15 minutes
+ago, or that has cost its budget. Boxes with other labels (rented by hand, or
+by other software) are never touched, nor are boxes of another owner, nor
+boxes of a session this prifly does not know (it only warns: "not this
+prifly's session"). A box whose session stopped — a usage limit, a crash,
+prifly closed — cannot extend its lease, so it goes when the lease ends; each
+leased box also runs a guard (`/root/.lease/guard.sh`) that destroys it with
+the box's own key if prifly is not running then. The lease's end is held to the
+hour the budget runs out, so the guard enforces the budget too.
 
-```bash
-vastlease book <name> <hours>     # BEFORE vastai create; at most 24 hours ahead; prints the --label
-vastlease extend <name> <hours>   # still working: add hours
-vastlease cancel <name>           # done: saved and destroyed within a minute
-vastlease list
-```
+- `vast_rent` books the lease itself, before it creates the box: for the budget's hours, at most 24 hours ahead.
+- `vast_extend <name> <hours>` adds hours while you still need the box; you are warned 15 minutes before the end.
+- `vast_cancel <name>` when the work is done: saved and destroyed within a minute.
+- `vast_boxes` shows each box's lease end and spend.
 
-Each command takes the name, the whole label (either form) or the box id.
-
-- **VAI-L1 (MUST)** Book the lease before `vastai create`. A new box without one has 5 minutes before it is destroyed.
-- **VAI-L2 (MUST)** Book for the job's real length plus a margin, and extend while it runs; you are warned 15 minutes before the end. Cancel as soon as the work is done — an idle box inside its lease is only warned about, never destroyed.
+- **VAI-L1 (MUST)** Never rent around `vast_rent`: a box without a lease has 5 minutes before it is destroyed.
+- **VAI-L2 (MUST)** Cancel as soon as the work is done — an idle box inside its lease is only warned about, never destroyed, and bills until the lease or the budget ends.
 - **VAI-L3 (MUST)** A box holding results gets a `/root/.lease/save` script (executable) that copies them off the box. It runs before every automatic destroy, for up to 10 minutes, and once more 10 minutes later if it fails; after that the box is destroyed anyway.
 
 ## Renting
-In prifly the CLI comes with the extension: `vastai` is on the PATH of every
-session prifly runs (a terminal session needs `uv tool install vastai`).
-`vastai set api-key <key>` stores the key in `~/.config/vastai/vast_api_key`.
-Reading the marketplace needs no key.
+The tools talk to Vast.ai with the API key `vastai set api-key <key>` stored in
+`~/.config/vastai/vast_api_key`; the reader stores it once. Reading the
+marketplace needs no key.
 
-```bash
-vastai show user                                   # credit, and whether an ssh key is registered
-vastai create ssh-key "$(cat ~/.ssh/<your_key>.pub)" -y
-vastai search offers 'rentable=true num_gpus>=1 reliability>0.98' -o 'dph_total'
-vastlease book <name> <hours>                      # the lease first (VAI-L1); prints the label
-vastai create instance <offer> --image ubuntu:22.04 --disk 40 --ssh --direct \
-   --onstart-cmd 'sleep infinity' --cancel-unavail --label "<the label vastlease printed>"
-yes y | vastai destroy instance <id>               # destroy asks for confirmation
-```
+1. `vast_offers` with filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`): the cheapest offers that pass, with their offer ids. For a CPU job, rank with `vastcpu` or the rules below and hand the chosen offer ids on.
+2. `vast_rent` with `name`, `budget`, `offers` (ids, best first), `image`, `disk_gb`, `purpose`, and optionally `onstart`, `env`, `ports`. The reader answers on the card.
+3. `vast_boxes` for its ssh address once it runs; `vast_logs <name>` if it does not.
 
-- **VAI-10 (MUST)** Register an ssh key before renting. A new account has none (`show user` prints `Ssh Key -`), and you get a box you cannot log into.
-- **VAI-11 (MUST)** Always pass `--cancel-unavail`. Without it a lost race returns `success: False` and still creates a stopped instance on another machine, which bills disk until destroyed.
-- **VAI-12 (MUST)** After any create that did not return `success: True`, run `show instances` and destroy whatever it left behind.
-- **VAI-13 (MUST)** Offers vanish between search and create. Re-check `rentable` right before creating, expect to lose anyway, and have the next candidate ready.
-- **VAI-14 (KNOW)** `--onstart-cmd 'sleep infinity'` is cheap insurance: a bare image whose default command exits may not stay up.
+`vastai show user`, `vastai show instances`, `vastai search offers` and `vastai logs` still work for reading.
+
+- **VAI-10 (MUST)** The account needs an ssh key before renting: a new account has none (`vastai show user` prints `Ssh Key -`), and you get a box you cannot log into. The hook refuses `vastai create ssh-key` like any `create`: ask the reader to add the public key at the console's account page.
+- **VAI-11 (KNOW)** `vast_rent` always sends `cancel_unavail`, so a lost race creates nothing; without it a lost race returns `success: False` and still creates a stopped instance on another machine, which bills disk until destroyed.
+- **VAI-12 (MUST)** When `vast_rent` fails, call `vast_boxes` and `vastai show instances` to be sure nothing was left behind, and tell the reader what you find.
+- **VAI-13 (KNOW)** Offers vanish between search and rent. `vast_rent` looks each offer up again, drops the gone ones, and if the chosen one is gone when the reader clicks, rents the next card row that fits the confirmed budget. Give it several offer ids, best first.
+- **VAI-14 (KNOW)** `onstart` defaults to `sleep infinity`, cheap insurance: a bare image whose default command exits may not stay up. If you pass your own `onstart`, end it so the box stays up.
 - **VAI-15 (KNOW)** A host can accept the contract and still fail to start the container (`unresolvable CDI devices`, status stuck at `created`). That is the host's driver setup: destroy at once and take the next candidate.
-- **VAI-16 (KNOW)** For a box that never reaches `running`, `vastai logs <id>` returns a URL the host must fill. If the log never appears, suspect the machine, not your image.
+- **VAI-16 (KNOW)** For a box that never reaches `running`, `vast_logs` asks the host for its log and waits for the host to fill it in. If the log never appears, suspect the machine, not your image.
 - **VAI-17 (KNOW)** For a PyTorch GPU job, `ubuntu:22.04` is enough: the container runtime provides `nvidia-smi`, and `pip install torch` brings its own CUDA libraries.
 - **VAI-18 (KNOW)** A script that polls a box over ssh must treat an ssh failure as "unknown", never as "process exited": Vast's proxy can drop every session at once, and a naive poll then tears down healthy work.
 
@@ -100,15 +94,15 @@ curl -sG 'https://console.vast.ai/api/v0/bundles/' --data-urlencode \
 - **VAI-33 (KNOW)** The server's `dph_total` filter matches the rate before the storage charge, so it lets offers through slightly above your cap. Re-check locally.
 
 ## `Permission denied (publickey)` on a new box
-- **VAI-34 (MUST)** Read `vastai logs <id> --tail 400` first. Do not re-attach keys, reboot or toggle the key in the console; each costs a billed round trip. Grep for `Hangup` too (VAI-38).
+- **VAI-34 (MUST)** Read `vast_logs <name>` with `tail` 400 first. Do not re-attach keys, reboot or toggle the key in the console; each costs a billed round trip. Grep for `Hangup` too (VAI-38).
 - **VAI-35 (KNOW)** The usual cause: `Authentication refused: bad ownership or modes for file /root/.ssh/authorized_keys`. The key is there and offered (compare the logged fingerprint with `ssh-keygen -lf <key>.pub`); sshd refuses the file's modes. Vast's own images work only because they set `StrictModes no`, so it depends on the image: `ubuntu:22.04` works where `vastai/base-image` CUDA tags have failed. Upstream: https://github.com/vast-ai/vast-cli/issues/336.
-- **VAI-36 (MUST)** The only fix is to recreate with the repair as `--onstart-cmd` at creation. `update instance --onstart` records the field but never runs it, not on reboot and not on stop then start. On a `vastai/base-image` tag, pass it on every create up front, leaving out the final `pkill` on `*-auto` tags (VAI-38):
+- **VAI-36 (MUST)** The only fix is to recreate with the repair as `onstart` at creation: updating a running box's onstart records the field but never runs it, not on reboot and not on stop then start. On a `vastai/base-image` tag, pass it as `vast_rent`'s `onstart` every time up front, leaving out the final `pkill` on `*-auto` tags (VAI-38):
 ```bash
---onstart-cmd 'chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; pkill -HUP sshd'
+onstart: 'chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; pkill -HUP sshd'
 ```
-- **VAI-37 (MUST)** Recreating gives the offer back to the market. Do it in one script: destroy, poll by `machine_id` (the contract id may change) until it is rentable, create at once.
-- **VAI-38 (MUST NOT)** Never send `pkill -HUP sshd` on an image where Vast's `/.launch` runs sshd in the foreground (`sshd -E /proc/1/fd/1`): the `*-auto` CUDA base images, and any image that already ships openssh-server (e.g. `vllm/vllm-openai`). The HUP kills sshd, the box still says `running`, ssh gets `Connection reset` or refused, and the log shows `Hangup /usr/sbin/sshd`. Only destroy and recreate recovers it. There, drop the `pkill` from VAI-36, or use `ubuntu:22.04`.
-- **VAI-39 (KNOW)** `connect_to localhost port 22: failed` repeated in the log means no sshd is running (VAI-38), not the key problem. `vastai execute` is no way in: it runs only on stopped instances and rejects `chmod`.
+- **VAI-37 (MUST)** Recreating gives the offer back to the market. `vast_cancel` the box, then find the same machine again with `vast_offers` (its offer id may change, so look it up by its host and GPU) and `vast_rent` it at once; the reader confirms the budget again.
+- **VAI-38 (MUST NOT)** Never send `pkill -HUP sshd` on an image where Vast's `/.launch` runs sshd in the foreground (`sshd -E /proc/1/fd/1`): the `*-auto` CUDA base images, and any image that already ships openssh-server (e.g. `vllm/vllm-openai`). The HUP kills sshd, the box still says `running`, ssh gets `Connection reset` or refused, and the log shows `Hangup /usr/sbin/sshd`. Only `vast_cancel` and a new `vast_rent` recovers it. There, drop the `pkill` from VAI-36, or use `ubuntu:22.04`.
+- **VAI-39 (KNOW)** `connect_to localhost port 22: failed` repeated in the log means no sshd is running (VAI-38), not the key problem. `vastai execute` is no way in (the hook refuses it): it runs only on stopped instances and rejects `chmod`.
 
 ## Editing this file
 - **VAI-40 (MUST NOT)** Never write a dollar sign directly followed by a digit in a skill file: the loader treats those as argument placeholders and splices the invocation's arguments in. Write prices in words or put the currency after the number.

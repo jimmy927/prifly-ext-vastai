@@ -5,12 +5,12 @@
   },
   "metadata": {
     "description": "The Vast.ai prifly extension, as a Claude Code plugin",
-    "version": "0.4.0"
+    "version": "0.7.0"
   },
   "plugins": [
     {
       "name": "vastai",
-      "description": "Renting Vast.ai boxes, and labelling each with the session that rents it.",
+      "description": "Renting Vast.ai boxes without surprise bills: budgeted vast_* tools, a hook that refuses the CLI, and the skills for the rest.",
       "source": "./"
     }
   ]

@@ -1,3 +1,0 @@
-#!/bin/sh
-# Book, extend and cancel Vast.ai box leases: see ../vastlease.ts.
-exec bun "$(dirname "$(readlink -f "$0")")/../vastlease.ts" "$@"

@@ -7,6 +7,12 @@ import type { Judged } from "./enforce";
 import type { Lease } from "./leases";
 import type { DecorationAction, DecorationTone, ExtensionMachine } from "./prifly-api";
 import { IDLE_MS, parseLabel, span } from "./rules";
+import { BUDGET_WARN, spentLine } from "./spend";
+
+/** "$7.40 of $20" for a box with a budget, else null. */
+function costOf({ spent, budget }: Judged): string | null {
+  return spent === null || budget === null ? null : spentLine(spent, budget);
+}
 
 /** The chip menu's "Extend lease" choices, in hours. */
 export const EXTEND_HOURS: Record<string, number> = { extend1: 1, extend4: 4 };
@@ -70,12 +76,16 @@ export function statusOf(
   const head = `${owner} · session ${session ?? "?"}`;
   const ends = lease.until === null ? "" : clock(lease.until);
   const idle = lease.idleMs >= IDLE_MS ? ` · idle ${idleSpan(lease.idleMs)}` : "";
+  const cost = costOf(lease);
+  const spend = cost === null ? "" : ` · ${cost}`;
   switch (verdict.kind) {
     case "leased":
-      return { text: `${head} · leased until ${ends} · ${span(verdict.leftMs)} left${idle}` };
+      return {
+        text: `${head} · leased until ${ends} · ${span(verdict.leftMs)} left${spend}${idle}`,
+      };
     case "ending":
       return {
-        text: `${head} · leased until ${ends} · ${span(verdict.leftMs)} left${idle}`,
+        text: `${head} · leased until ${ends} · ${span(verdict.leftMs)} left${spend}${idle}`,
         tone: "warning",
       };
     case "grace":
@@ -118,6 +128,24 @@ function hours(ms: number): string {
  * asks for attention (null leaves the load's colour), and hover lines.
  */
 export function leaseLine(
+  judged: Judged,
+  enforce: boolean,
+): { short: string; tone: DecorationTone | null; details: string[] } | null {
+  const line = leaseLineOf(judged, enforce);
+  const cost = costOf(judged);
+  if (line === null || cost === null) return line;
+  const near = (judged.spent ?? 0) >= (judged.budget ?? Number.POSITIVE_INFINITY) * BUDGET_WARN;
+  return {
+    short: `${line.short} · ${cost}`,
+    tone: line.tone ?? (near ? "warning" : null),
+    details: [
+      ...line.details,
+      `Cost ${cost} of its budget: it is saved and destroyed at the budget`,
+    ],
+  };
+}
+
+function leaseLineOf(
   { verdict, idleMs, until }: Judged,
   enforce: boolean,
 ): { short: string; tone: DecorationTone | null; details: string[] } | null {

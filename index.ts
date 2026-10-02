@@ -19,15 +19,16 @@
  * not running, since a stopped box still bills disk. A lease about to end
  * turns it amber, and a box with none, or past its lease, red.
  *
- * A session's box holds a lease (`leases.ts`, booked with `vastlease`), and
- * `enforce.ts` destroys the box when it has none or it ran out; with
- * `"enforce": false`, the default, it only says what it would do.
+ * A session's box holds a lease (`leases.ts`, booked by the `vast_rent` tool),
+ * and `enforce.ts` destroys the box when it has none, it ran out, or it has
+ * cost its budget; with `"enforce": false`, the default, it only says what it
+ * would do. Sessions rent, extend, cancel and inspect boxes only through the
+ * tools this serves (`tools.ts`), and the plugin's hook refuses the CLI.
  *
- * `vastai`, still used to destroy a box, is this extension's own: prifly
- * builds a `.venv` from `pyproject.toml` and `uv.lock` before starting it, and
- * hands its `bin` in `api.paths`. The list reads the API key where the CLI
- * keeps it (`vastai set api-key`). Config (optional), in this folder's `config.json`:
- *   { "vastai": "/path/to/another/vastai", "refreshSeconds": 60, "enforce": true, "owner": "jimmy" }
+ * Everything goes over Vast.ai's REST API (`vast-api.ts`), with the API key
+ * where the CLI keeps it (`~/.config/vastai/vast_api_key`). Config (optional),
+ * in this folder's `config.json`:
+ *   { "refreshSeconds": 60, "enforce": true, "owner": "jimmy", "sshKey": "~/.ssh/vast_ed25519" }
  */
 
 import { homedir } from "node:os";
@@ -38,15 +39,15 @@ import { boxActions, EXTEND_HOURS, leaseLine, providerCard, statusOf } from "./m
 import { readOwner } from "./owner";
 import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
 import { parseLabel } from "./rules";
-import { sshCommand, sshTarget, vastai } from "./run";
-import { type Instance, listInstances, readApiKeys } from "./vast-api";
+import { sshCommand, sshTarget } from "./run";
+import { makeTools } from "./tools";
+import { destroyInstance, type Instance, listInstances, readApiKeys, withKeys } from "./vast-api";
 
 /**
  * `sshKey`: the private key your boxes accept, for the terminal a click opens
  * and the save and guard the leases run. `enforce`: destroy what breaks a lease.
  */
 type Config = {
-  vastai: string;
   refreshSeconds: number;
   sshKey: string | null;
   enforce: boolean;
@@ -57,7 +58,7 @@ const IDLE_PCT = 20;
 const BUSY_PCT = 80;
 
 export async function activate(api: ExtensionApi): Promise<() => void> {
-  const config = await readConfig(api.folder, api.paths);
+  const config = await readConfig(api.folder);
   const enforcer = new Enforcer(api, config);
   const labels = new Map<number, string>();
   let stopped = false;
@@ -85,6 +86,20 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       busy = false;
     }
   };
+  // Absent on a prifly older than "extension tools": the boxes still show.
+  api.tools?.register(
+    makeTools({
+      folder: api.folder,
+      owner: () => readOwner(api.folder, process.env),
+      sshKey: config.sshKey,
+      keys: () => readApiKeys(),
+      get: fetch,
+      now: Date.now,
+      sleep: Bun.sleep,
+      refresh: () => void refresh(),
+      log: (event, fields) => api.log(event, fields),
+    }),
+  );
   api.onAction(async (key, action) => {
     const hours = EXTEND_HOURS[action];
     if (!/^\d+$/.test(key) || (action !== "destroy" && hours === undefined)) {
@@ -101,8 +116,8 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       void refresh();
       return `Vast.ai box #${key} is leased until ${new Date(lease.until).toLocaleTimeString()}.`;
     }
-    // "Destroy box…": prifly has already asked the reader, so the CLI's own prompt is skipped.
-    await vastai(config.vastai, ["destroy", "instance", key, "-y"]);
+    // "Destroy box…": prifly has already asked the reader.
+    await withKeys(await readApiKeys(), (apiKey) => destroyInstance(apiKey, id));
     api.log("destroyed", { instance: key });
     void refresh();
     return `Destroyed Vast.ai box #${key}; it no longer bills.`;
@@ -122,12 +137,11 @@ function remember(labels: Map<number, string>, boxes: readonly Instance[]): void
   for (const box of boxes) if (box.id !== undefined) labels.set(box.id, box.label ?? "");
 }
 
-async function readConfig(folder: string, paths: readonly string[]): Promise<Config> {
+async function readConfig(folder: string): Promise<Config> {
   const raw = (await Bun.file(join(folder, "config.json"))
     .json()
     .catch(() => ({}))) as Partial<Config>;
   return {
-    vastai: raw.vastai ?? Bun.which("vastai", { PATH: paths.join(":") }) ?? "vastai",
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
     sshKey: raw.sshKey == null ? null : raw.sshKey.replace(/^~(?=\/)/, homedir()),
     enforce: raw.enforce === true,
@@ -214,7 +228,9 @@ function details(box: Instance, status: string, rate: string, unclaimed: boolean
     running ? `CPU ${cpu} · GPU ${gpu}${gpus} (${box.gpu_name ?? "?"})` : "",
     running ? `Memory ${memory(box)}` : "",
     box.ssh_host === undefined ? "" : `ssh -p ${box.ssh_port} root@${box.ssh_host}`,
-    unclaimed ? "Unclaimed: label it <owner>/s-<session8>/<name> or destroy it." : "",
+    unclaimed
+      ? "Unclaimed: rented by hand or by other software. Destroy it from its menu if it is not wanted."
+      : "",
   ].filter((line) => line !== "");
 }
 
@@ -242,7 +258,7 @@ function machinesOf(
     trust: "ask-first",
     ...providerCard(waiting),
     notes:
-      "Rents Linux GPU or CPU boxes by the hour; read the vastai skill before renting one, and book its lease with `vastlease book` first.",
+      "Rents Linux GPU or CPU boxes by the hour, only through the vast_offers and vast_rent tools: the reader confirms the budget of each rental. Read the vastai skill first.",
     capabilities: [
       { name: "rent:linux-gpu", state: "present" },
       { name: "rent:linux-cpu", state: "present" },

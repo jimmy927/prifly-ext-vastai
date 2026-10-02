@@ -2,9 +2,8 @@
  * Whose boxes this prifly manages: the owner part of `<owner>/s-<session8>/<name>`.
  *
  * `"owner"` in the extension's `config.json` if set, else `$USER`, as
- * `ownerName` in `rules.ts` makes it. Read the same way by the extension (in
- * the prifly host) and by `vastlease` (in a session), so a box booked in a
- * session carries the owner the extension manages.
+ * `ownerName` in `rules.ts` makes it. The extension and its tools both read it
+ * here, so a box a session rents carries the owner the extension manages.
  */
 
 import { join } from "node:path";

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Judged } from "../enforce";
 import type { Lease } from "../leases";
-import { boxActions, providerCard, statusOf } from "../machine-card";
+import { boxActions, leaseLine, providerCard, statusOf } from "../machine-card";
 import type { Verdict } from "../rules";
 
 const MIN = 60_000;
@@ -9,6 +9,8 @@ const judged = (verdict: Verdict, idleMs = 0, until: number | null = null): Judg
   verdict,
   idleMs,
   until,
+  spent: null,
+  budget: null,
 });
 const at = new Date(2026, 8, 30, 14, 30).getTime();
 const enabled = (lease: Judged | undefined) =>
@@ -77,6 +79,7 @@ describe("providerCard", () => {
     bookedAt: 0,
     until: hours * 3_600_000,
     cancelled: false,
+    budget: null,
   });
   test("lists waiting bookings", () => {
     expect(providerCard([lease("lc-a", 2)]).status?.text).toBe("1 booking waiting: lc-a, 2 h");
@@ -92,5 +95,41 @@ describe("providerCard", () => {
       ["extend4", true],
       ["destroy", true],
     ]);
+  });
+});
+
+describe("the budget in the lease line", () => {
+  const withBudget = (verdict: Verdict, spent: number, budget: number): Judged => ({
+    ...judged(verdict, 0, at),
+    spent,
+    budget,
+  });
+
+  test("the chip says what the box has cost of its budget", () => {
+    const line = leaseLine(withBudget({ kind: "leased", leftMs: 100 * MIN }, 7.4, 20), true);
+    expect(line?.short).toBe("1h 40m · $7.40 of $20");
+    expect(line?.tone).toBeNull();
+    expect(line?.details.some((d) => d.includes("$7.40 of $20"))).toBe(true);
+  });
+
+  test("near the budget the chip turns amber", () => {
+    const line = leaseLine(withBudget({ kind: "leased", leftMs: 100 * MIN }, 18.5, 20), true);
+    expect(line?.tone).toBe("warning");
+  });
+
+  test("without a budget the line is as before", () => {
+    expect(leaseLine(judged({ kind: "leased", leftMs: 100 * MIN }, 0, at), true)?.short).toBe(
+      "1h 40m",
+    );
+  });
+
+  test("the machine card's status says it too", () => {
+    const status = statusOf(
+      withBudget({ kind: "leased", leftMs: 100 * MIN }, 7.4, 20),
+      "2b89f308",
+      "jimmy",
+      true,
+    );
+    expect(status.text).toContain("1h 40m left · $7.40 of $20");
   });
 });
