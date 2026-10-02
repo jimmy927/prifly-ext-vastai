@@ -21,7 +21,7 @@ honesty about the hardware.
 - **VAI-B3 (KNOW)** `vast_extend` is free while the box's cost to the new end stays within its budget; past that the reader is asked to raise the budget, and the box is extended only as far as the amount they confirm allows.
 
 ## Labels: which session owns a box
-- **VAI-7 (KNOW)** Every box is labelled with its owner and the session that rents it: `<owner>/s-<first 8 characters of the session id>/<name>`, e.g. `jimmy/s-2b89f308/lc-box1`. `vast_rent` builds it from the `name` you give; never build one by hand. The prifly Vast.ai extension shows each box on that session, boxes without such a label in the status bar as unclaimed, and boxes of another owner (another prifly on the same Vast.ai account) as that prifly's. The tools act only on this session's boxes.
+- **VAI-7 (KNOW)** Every box is labelled with its owner and the session that rents it: `<owner>/s-<first 8 characters of the session id>/<name>`, e.g. `alice/s-2b89f308/box1`. `vast_rent` builds it from the `name` you give; never build one by hand. The prifly Vast.ai extension shows each box on that session, boxes without such a label in the status bar as unclaimed, and boxes of another owner (another prifly on the same Vast.ai account) as that prifly's. The tools act only on this session's boxes.
 - **VAI-8 (KNOW)** A label cannot be changed from a session. A box another session rented is that session's: ask the reader if it is to be handed over. Boxes without a session label (rented by hand or by other software) are never touched by the extension.
 - **VAI-9 (MUST)** Keep `name` to at most 8 characters (the tool refuses longer), so short displays show it whole. Put what the box is for in `purpose` or your notes, not its name.
 
@@ -51,7 +51,7 @@ The tools talk to Vast.ai with the API key `vastai set api-key <key>` stored in
 `~/.config/vastai/vast_api_key`; the reader stores it once. Reading the
 marketplace needs no key.
 
-1. `vast_offers` with filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`): the cheapest offers that pass, with their offer ids. For a CPU job, rank with `vastcpu` or the rules below and hand the chosen offer ids on.
+1. `vast_offers` with filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`): the cheapest offers that pass, with their offer ids. For a CPU job, rank with the rules below and hand the chosen offer ids on.
 2. `vast_rent` with `name`, `budget`, `offers` (ids, best first), `image`, `disk_gb`, `purpose`, and optionally `onstart`, `env`, `ports`. The reader answers on the card.
 3. `vast_boxes` for its ssh address once it runs; `vast_logs <name>` if it does not.
 
@@ -100,9 +100,18 @@ curl -sG 'https://console.vast.ai/api/v0/bundles/' --data-urlencode \
 ```bash
 onstart: 'chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; pkill -HUP sshd'
 ```
-- **VAI-37 (MUST)** Recreating gives the offer back to the market. `vast_cancel` the box, then find the same machine again with `vast_offers` (its offer id may change, so look it up by its host and GPU) and `vast_rent` it at once; the reader confirms the budget again.
+- **VAI-37 (MUST)** Recreating gives the offer back to the market. `vast_cancel` the box, then find the same machine again with `vast_offers` (its offer id may change, so look it up by its host and GPU) and `vast_rent` it at once; the reader confirms the budget again. Do it in one go: the offer can be taken by someone else the moment it is released, and there may be no comparable machine to fall back on.
 - **VAI-38 (MUST NOT)** Never send `pkill -HUP sshd` on an image where Vast's `/.launch` runs sshd in the foreground (`sshd -E /proc/1/fd/1`): the `*-auto` CUDA base images, and any image that already ships openssh-server (e.g. `vllm/vllm-openai`). The HUP kills sshd, the box still says `running`, ssh gets `Connection reset` or refused, and the log shows `Hangup /usr/sbin/sshd`. Only `vast_cancel` and a new `vast_rent` recovers it. There, drop the `pkill` from VAI-36, or use `ubuntu:22.04`.
 - **VAI-39 (KNOW)** `connect_to localhost port 22: failed` repeated in the log means no sshd is running (VAI-38), not the key problem. `vastai execute` is no way in (the hook refuses it): it runs only on stopped instances and rejects `chmod`.
+- **VAI-41 (KNOW)** A repair that worked: the same machine, image and key, recreated with the VAI-36 repair as `onstart`, authenticated on the first ssh attempt, with `/root` and `/root/.ssh` at `700`, the key at `600` and `StrictModes no` in `sshd_config`. Which half of the repair matters was never isolated, so keep both.
+
+## Cleaning up and rebuilding
+- **VAI-42 (MUST)** Do not keep an idle box alive to save its disk: a stopped instance bills for the disk (VAI-3), and some other clouds bill stopped instances at a higher rate still. Keep the inputs in object storage or a repository, give the job a bootstrap script that takes a fresh box to the point of working, and destroy the box when the job ends.
+- **VAI-43 (KNOW)** A balance below the account threshold stops every instance, boxes unrelated to the job included (VAI-4); check it before a campaign, not after boxes go down.
+
+## ssh aliases for rented boxes
+- **VAI-44 (MUST NOT)** Never paste a `Host` block at the top of `~/.ssh/config`, above the global defaults. In ssh config a setting belongs to the nearest `Host` line above it, so `ForwardAgent yes` quietly becomes a setting of that one host and every other host loses it; the symptom (say `git@github.com: Permission denied (publickey)` on another machine) is far from the cause. Keep one file per box in an included directory such as `~/.ssh/config.d/`, or put `Host *` defaults first.
+- **VAI-45 (KNOW)** `ssh -G <host> | grep -iE '^forwardagent|^addressfamily'` prints what ssh will really apply to a host. A `Host`, `HostName` or `Port` line with no value breaks every ssh command with `line N: Missing argument`: a generator must skip a box until its host and port are both known.
 
 ## Editing this file
 - **VAI-40 (MUST NOT)** Never write a dollar sign directly followed by a digit in a skill file: the loader treats those as argument placeholders and splices the invocation's arguments in. Write prices in words or put the currency after the number.
