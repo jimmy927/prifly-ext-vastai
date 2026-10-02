@@ -19,6 +19,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type { ExtensionVaultApi } from "./prifly-api";
 
 /** The CLI's own default, and its `VAST_URL` override. */
 export const SERVER = process.env["VAST_URL"] ?? "https://console.vast.ai";
@@ -80,25 +81,36 @@ export function parsePage(body: unknown): { rows: Instance[]; next: string | nul
 }
 
 /**
- * The keys to try, in the CLI's order (`cli/main.py`): `$VAST_API_KEY`; else
- * the 2FA session key, then the API key, in `$XDG_CONFIG_HOME/vastai/`; else
- * the legacy `~/.vast_api_key`. The CLI falls back from an expired 2FA key to
- * the API key, so both are tried. Read fresh each refresh: `vastai set
- * api-key` or a new 2FA login is picked up without restarting.
+ * The prifly vault entry the key is read from first: an `api-token` entry at
+ * level 1, named under `vault` in `prifly-extension.json` so prifly hands it over.
+ */
+export const VAULT_ENTRY = "vastai";
+
+/**
+ * The keys to try: the token of prifly's vault entry `vastai`, when there is
+ * one and prifly has `api.vault`; then the CLI's own, in its order
+ * (`cli/main.py`): `$VAST_API_KEY`; else the 2FA session key, then the API
+ * key, in `$XDG_CONFIG_HOME/vastai/`; else the legacy `~/.vast_api_key`. The
+ * CLI falls back from an expired 2FA key to the API key, so both are tried,
+ * and a refused vault key falls back to the CLI's the same way. Read fresh
+ * each refresh: a vault entry changed or fenced, `vastai set api-key` or a
+ * new 2FA login is picked up without restarting.
  */
 export async function readApiKeys(
   env: Record<string, string | undefined> = process.env,
   home = homedir(),
+  vault?: ExtensionVaultApi,
 ): Promise<string[]> {
+  const fromVault = (await vault?.read(VAULT_ENTRY))?.trim();
+  const keys: string[] = fromVault ? [fromVault] : [];
   const fromEnv = env["VAST_API_KEY"]?.trim();
-  if (fromEnv) return [fromEnv];
+  if (fromEnv) return keys.includes(fromEnv) ? keys : [...keys, fromEnv];
   const config = join(env["XDG_CONFIG_HOME"] || join(home, ".config"), "vastai");
   const files = [
     join(config, "vast_tfa_key"),
     join(config, "vast_api_key"),
     join(home, ".vast_api_key"),
   ];
-  const keys: string[] = [];
   for (const path of files) {
     const file = Bun.file(path);
     if (!(await file.exists())) continue;
@@ -119,7 +131,9 @@ export async function withKeys<T>(
   attempt: (key: string) => Promise<T>,
 ): Promise<T> {
   if (keys.length === 0) {
-    throw new Error("No Vast.ai API key: run `vastai set api-key <KEY>`");
+    throw new Error(
+      "No Vast.ai API key: add an api-token entry `vastai` (level 1) to prifly's vault, or run `vastai set api-key <KEY>`",
+    );
   }
   let refused: Error | null = null;
   for (const key of keys) {

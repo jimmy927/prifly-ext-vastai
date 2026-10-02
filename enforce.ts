@@ -20,6 +20,7 @@
  * and one of an unknown session is told about once, never destroyed or guarded.
  */
 
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
@@ -35,7 +36,7 @@ import {
 } from "./rules";
 import { onBox, sshTarget } from "./run";
 import { BUDGET_WARN, budgetText, cappedUntil, spentLine, spentOf } from "./spend";
-import { destroyInstance, type Instance, readApiKeys, withKeys } from "./vast-api";
+import { destroyInstance, type Fetch, type Instance, readApiKeys, withKeys } from "./vast-api";
 
 export type EnforceConfig = {
   sshKey: string | null;
@@ -60,10 +61,18 @@ export type Judged = {
 /** What the enforcer does to Vast.ai, replaceable so a test destroys nothing. */
 export type EnforceDeps = { destroy: (id: number) => Promise<void> };
 
-/** Destroy over REST with the account's key, as `guard.sh` does on the box. */
-const restDeps: EnforceDeps = {
-  destroy: async (id) => withKeys(await readApiKeys(), (key) => destroyInstance(key, id)),
-};
+/**
+ * Destroy over REST with the account's key, as `guard.sh` does on the box:
+ * prifly's vault entry first, when `vault` is there, then the CLI's key files.
+ */
+export function restDeps(vault: ExtensionApi["vault"], get: Fetch = fetch): EnforceDeps {
+  return {
+    destroy: async (id) =>
+      withKeys(await readApiKeys(process.env, homedir(), vault), (key) =>
+        destroyInstance(key, id, get),
+      ),
+  };
+}
 
 const SAVE_MS = 10 * 60_000;
 const RETRY_MS = 10 * 60_000;
@@ -86,7 +95,7 @@ export class Enforcer {
   readonly #guarding = new Set<number>();
   #stopped = false;
 
-  constructor(api: ExtensionApi, config: EnforceConfig, deps: EnforceDeps = restDeps) {
+  constructor(api: ExtensionApi, config: EnforceConfig, deps: EnforceDeps = restDeps(api.vault)) {
     this.#api = api;
     this.#config = config;
     this.#deps = deps;

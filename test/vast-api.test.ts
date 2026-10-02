@@ -11,6 +11,7 @@ import {
   parsePage,
   readApiKeys,
   requestLogs,
+  VAULT_ENTRY,
   withKeys,
 } from "../vast-api";
 
@@ -139,6 +140,32 @@ describe("readApiKeys", () => {
 
   test("none anywhere is an empty list", async () => {
     expect(await readApiKeys({}, await mkdtemp(join(tmpdir(), "vastai-keys-")))).toEqual([]);
+  });
+
+  test("prifly's vault entry `vastai` goes first, the CLI's keys after it, each once", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
+    await mkdir(join(home, ".config", "vastai"), { recursive: true });
+    await writeFile(join(home, ".config", "vastai", "vast_api_key"), "file\n");
+    const asked: string[] = [];
+    const vault = (token: string | null) => ({
+      read: async (name: string) => {
+        asked.push(name);
+        return token;
+      },
+    });
+    expect(await readApiKeys({}, home, vault(" vaulted\n"))).toEqual(["vaulted", "file"]);
+    expect(asked).toEqual([VAULT_ENTRY]);
+    expect(VAULT_ENTRY).toBe("vastai");
+    expect(await readApiKeys({}, home, vault("file"))).toEqual(["file"]);
+    expect(await readApiKeys({ VAST_API_KEY: "env" }, home, vault("v"))).toEqual(["v", "env"]);
+  });
+
+  test("no vault entry, or a prifly without `api.vault`, reads the files as before", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
+    await writeFile(join(home, ".vast_api_key"), "legacy");
+    const none = { read: async () => null };
+    expect(await readApiKeys({}, home, none)).toEqual(["legacy"]);
+    expect(await readApiKeys({}, home, undefined)).toEqual(["legacy"]);
   });
 });
 

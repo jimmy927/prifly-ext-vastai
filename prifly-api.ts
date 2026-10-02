@@ -158,7 +158,23 @@ export type ExtensionToolsApi = {
   register(tools: ExtensionTool[]): void;
 };
 
+/** Added to `ExtensionApi`. Absent on an older prifly: call it as `api.vault?.read(...)`. */
+export type ExtensionVaultApi = {
+  /**
+   * The token of the vault entry `name`, an `api-token` entry the reader keeps
+   * in prifly's vault. Null when there is no such entry, it is another kind,
+   * the manifest's `vault` list does not name it, or its level is not 1.
+   */
+  read(name: string): Promise<string | null>;
+};
+
 export type ExtensionApi = {
+  /**
+   * The vault's API tokens this extension's manifest names under `vault`.
+   * Absent on a prifly host older than "extension vault" — call it as
+   * `api.vault?.read(...)`; without it the key comes from its files.
+   */
+  vault?: ExtensionVaultApi;
   /**
    * Replace everything this extension shows. `bySession` is keyed by a
    * session id or any unique start of one (a label has room for 8 characters);

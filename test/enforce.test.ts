@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type EnforceDeps, Enforcer } from "../enforce";
+import { type EnforceDeps, Enforcer, restDeps } from "../enforce";
 import { book, leasesPath, readLeases, updateLeases } from "../leases";
 import type { ExtensionApi } from "../prifly-api";
 import type { Instance } from "../vast-api";
@@ -247,4 +247,17 @@ describe("budget", () => {
     const judged = await enforcer.round([billing(1, "jimmy/s-0123abcd/lc-box1", 2, 500)], NOW);
     expect(judged.get(1)?.verdict.kind).toBe("leased");
   });
+});
+
+test("the enforcer destroys with the key from prifly's vault, before any key file", async () => {
+  const seen: { url: string; auth: string }[] = [];
+  const get = async (url: string, init: RequestInit) => {
+    seen.push({ url, auth: new Headers(init.headers).get("Authorization") ?? "" });
+    return new Response("{}", { status: 200 });
+  };
+  const vault = { read: async (name: string) => (name === "vastai" ? "vaulted-key" : null) };
+  await restDeps(vault, get).destroy(42);
+  expect(seen).toEqual([
+    { url: expect.stringContaining("/api/v0/instances/42/"), auth: "Bearer vaulted-key" },
+  ]);
 });

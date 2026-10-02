@@ -59,6 +59,8 @@ const BUSY_PCT = 80;
 
 export async function activate(api: ExtensionApi): Promise<() => void> {
   const config = await readConfig(api.folder);
+  // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
+  const keys = () => readApiKeys(process.env, homedir(), api.vault);
   const enforcer = new Enforcer(api, config);
   const labels = new Map<number, string>();
   let stopped = false;
@@ -67,7 +69,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
     if (busy) return;
     busy = true;
     try {
-      const boxes = await listInstances(await readApiKeys());
+      const boxes = await listInstances(await keys());
       const judged = await enforcer.round(boxes, Date.now());
       if (!stopped) {
         remember(labels, boxes);
@@ -92,7 +94,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       folder: api.folder,
       owner: () => readOwner(api.folder, process.env),
       sshKey: config.sshKey,
-      keys: () => readApiKeys(),
+      keys,
       get: fetch,
       now: Date.now,
       sleep: Bun.sleep,
@@ -117,7 +119,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       return `Vast.ai box #${key} is leased until ${new Date(lease.until).toLocaleTimeString()}.`;
     }
     // "Destroy box…": prifly has already asked the reader.
-    await withKeys(await readApiKeys(), (apiKey) => destroyInstance(apiKey, id));
+    await withKeys(await keys(), (apiKey) => destroyInstance(apiKey, id));
     api.log("destroyed", { instance: key });
     void refresh();
     return `Destroyed Vast.ai box #${key}; it no longer bills.`;

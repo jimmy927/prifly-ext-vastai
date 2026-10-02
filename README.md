@@ -38,15 +38,23 @@ uses nearly every part prifly lets an extension plug in, all described under
 1. In prifly, open **Extensions** in the status bar. Find **Vast.ai boxes**,
    install it, then tick it to enable it. Or clone this repository into
    `~/.local/share/prifly/extensions/` yourself.
-2. Store your API key once, where the Vast.ai CLI keeps it (the key is on the account
-   page of the Vast.ai console):
+2. Store your API key once (it is on the account page of the Vast.ai
+   console). Best in prifly's vault: open **Vault**, add an entry named
+   `vastai` of kind **API token** at **level 1**, and paste the key as its
+   token. The manifest names `vastai` under `vault`, so prifly hands this
+   extension that one entry's token (`api.vault.read`) and no other. At level
+   2, 3 or 4 prifly does not hand it over — those ask you on a session's card,
+   which an extension has none of — and the extension falls back to the files
+   below. Without a vault entry, or on a prifly too old to have a vault for
+   extensions, store it where the Vast.ai CLI keeps it:
 
        mkdir -p ~/.config/vastai
        printf %s '<key>' > ~/.config/vastai/vast_api_key && chmod 600 ~/.config/vastai/vast_api_key
 
-   `$VAST_API_KEY` works too. The extension reads the key from there each
-   time it calls Vast.ai; sessions never print it. A key saved by
-   `vastai set api-key` on this machine works unchanged.
+   `$VAST_API_KEY` works too. The extension reads the key each time it calls
+   Vast.ai, the vault entry first, then these; sessions never print it. A key
+   saved by `vastai set api-key` on this machine works unchanged. If Vast.ai
+   refuses the vault's key, the files' keys are tried next.
 3. Sessions that were already running get the extension's tools, hook, skill
    and instructions when their process next starts. **Apply to idle
    sessions** in the Extensions dialog restarts the ones waiting for you, so
@@ -124,8 +132,8 @@ billing someone, so it stays visible.
 
 - **Polling.** Once a minute (`refreshSeconds`), `vast-api.ts` asks Vast.ai's
   REST API for the boxes — the same `GET /api/v1/instances/` the CLI's
-  `show instances --raw` sends, with the key saved in
-  `~/.config/vastai/vast_api_key`. It used to run the CLI itself; on WSL2 each
+  `show instances --raw` sends, with the key from prifly's vault entry
+  `vastai`, else the one saved in `~/.config/vastai/vast_api_key`. It used to run the CLI itself; on WSL2 each
   run read 30–48 MB off disk and took about a second of CPU, once a minute,
   to start Python.
 - **Placing.** Each box becomes one item, placed on the session its label
@@ -410,6 +418,7 @@ type-checks on its own.
 | `onAction(handler)` | Carries out the actions your items offer: `handler(key, actionId)` returns what to tell the reader, or throws to report a failure. |
 | `tools?.register(tools)` | Serves MCP tools to every session. Each tool has a `name`, a `description`, a JSON-schema `inputSchema` and `call(args, ctx)`; `ctx.session` is the caller's full session id, `ctx.pick(card)` shows prifly's pick card (optionally with an editable `amount`) and resolves to `{ row, amount }` or null, and `ctx.signal` aborts when the session goes away. Absent on an older prifly: call it as `api.tools?.register(...)`. |
 | `notify?(text, options)` | Tells the reader something now, under the extension's name; `session` makes a click open that session. Absent on an older prifly. |
+| `vault?.read(name)` | The token of prifly's vault entry `name`, or null: only an **API token** entry at level 1, and only one your manifest names under `"vault": ["<name>"]`. Read it each time you need it. Absent on an older prifly: call it as `api.vault?.read(...)` and keep a fallback. |
 | `paths` | The folders your programs are in: your `bin` and your venv's `bin`. This extension ships neither. |
 
 Each item you show is `{ key, icon, label, tone, details }`:
@@ -604,8 +613,11 @@ prompt, or your skill.
   loading, starting or showing, it is stopped and its error is shown in the
   Extensions dialog. The host and the other extensions go on.
 - **Keep secrets out of the extension.** This extension never touches your
-  Vast.ai key. It reads the key from `~/.config/vastai/` (or `$VAST_API_KEY`)
-  only to call Vast.ai, and neither logs nor shows it. Consider
+  Vast.ai key. It reads the key from prifly's vault (`api.vault.read`, only
+  the `vastai` entry its manifest names, only at level 1), else from
+  `~/.config/vastai/` (or `$VAST_API_KEY`), only to call Vast.ai, and neither
+  logs nor shows it. prifly's vault audit lists the read as
+  "extension vastai". Without the vault, consider
   `chmod 600 ~/.config/vastai/vast_api_key`.
 - **A budget is a limit, not a lock.** The hook stops the usual shapes of a
   rental from a shell; a script that reads the key can still rent. The budget
