@@ -340,3 +340,76 @@ test("the enforcer destroys with the key from prifly's vault, before any key fil
     { url: expect.stringContaining("/api/v0/instances/42/"), auth: "Bearer vaulted-key" },
   ]);
 });
+
+describe("the account's credit", () => {
+  const running = (id: number, label: string, rate: number, startedHoursAgo = 1): Instance => ({
+    id,
+    label,
+    actual_status: "running",
+    dph_total: rate,
+    start_date: (NOW - startedHoursAgo * H) / 1000,
+  });
+
+  test("the runway is told once per warning, to the session that owns a box, and again after a top-up", async () => {
+    const { api, notices } = await host();
+    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const boxes = [running(1, "jimmy/s-0123abcd/job1", 2)];
+    // $20 at $2/h: 10 h, under the 12 h warning.
+    enforcer.creditRound({ credit: 20, threshold: null }, boxes, [], NOW);
+    enforcer.creditRound({ credit: 19.9, threshold: null }, boxes, [], NOW + 60_000);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.session).toBe("0123abcd");
+    expect(notices[0]?.text).toStartWith(
+      "Vast credit $20.00 lasts about 10h 0m at the account's burn of $2.00/h",
+    );
+    // 2.5 h: under the 3 h warning.
+    enforcer.creditRound({ credit: 5, threshold: null }, boxes, [], NOW + 2 * 60_000);
+    expect(notices).toHaveLength(2);
+    expect(notices[1]?.text).toContain("lasts about 2h 30m");
+    // Topped up: said, and the warnings may come again.
+    const view = enforcer.creditRound(
+      { credit: 105, threshold: null },
+      boxes,
+      [],
+      NOW + 3 * 60_000,
+    );
+    expect(view.runway).toBe(52.5);
+    expect(notices[2]?.text).toBe(
+      "Vast credit topped up to $105.00: it now lasts 52h 30m at the account's burn.",
+    );
+    enforcer.creditRound({ credit: 20, threshold: null }, boxes, [], NOW + 4 * 60_000);
+    expect(notices).toHaveLength(4);
+  });
+
+  test("a box whose budget runs past the credit's end is told to its session, once per budget", async () => {
+    const { api, notices } = await host();
+    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const boxes = [running(1, "jimmy/s-0123abcd/job1", 2)];
+    const leases = [
+      {
+        label: "jimmy/s-0123abcd/job1",
+        box: 1,
+        bookedAt: NOW - H,
+        until: NOW + 10 * H,
+        cancelled: false,
+        budget: 60,
+      },
+    ];
+    // $50 lasts 25 h; the box needs $58 more, 29 h.
+    enforcer.creditRound({ credit: 50, threshold: null }, boxes, leases, NOW);
+    enforcer.creditRound({ credit: 50, threshold: null }, boxes, leases, NOW + 60_000);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.session).toBe("0123abcd");
+    expect(notices[0]?.text).toStartWith(
+      "job1 needs $58.00 more to reach its budget (29h 0m), but the Vast credit runs out in about 25h 0m",
+    );
+  });
+
+  test("with nothing of this prifly's billing, a low runway goes to the status bar", async () => {
+    const { api, notices } = await host();
+    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    enforcer.creditRound({ credit: 1, threshold: null }, [running(9, "rj-judge:1:2", 2)], [], NOW);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.session).toBeUndefined();
+  });
+});

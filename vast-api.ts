@@ -19,6 +19,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type { Account } from "./credit";
 import type { ExtensionVaultApi } from "./prifly-api";
 
 /** The CLI's own default, and its `VAST_URL` override. */
@@ -49,6 +50,8 @@ export const InstanceSchema = z.object({
   actual_status: field(text.nullable()),
   intended_status: field(text.nullable()),
   dph_total: field(z.number()),
+  /** Dollars an hour for the disk alone: what a stopped box bills. */
+  storage_total_cost: field(z.number()),
   cpu_util: field(z.number().nullable()),
   gpu_util: field(z.number().nullable()),
   mem_usage: field(z.number().nullable()),
@@ -191,6 +194,27 @@ async function failure(what: string, response: Response): Promise<Error> {
   return response.status === 401 || response.status === 403
     ? new KeyRefused(message)
     : new Error(message);
+}
+
+const AccountSchema = z.object({
+  credit: z.number(),
+  balance_threshold: field(z.number().nullable()),
+  balance_threshold_enabled: field(z.boolean().nullable()),
+});
+
+/**
+ * The account's credit, and the balance at which Vast.ai stops every box on
+ * it (null when that auto-stop is off): `GET /api/v0/users/current/`, as the
+ * CLI's `show user` asks. Vast.ai has no call that adds credit; the reader
+ * tops up in the console, and the next read shows it.
+ */
+export async function getAccount(key: string, get: Fetch = fetch): Promise<Account> {
+  const response = await get(`${SERVER}/api/v0/users/current/`, authorized(key, "GET"));
+  if (!response.ok) throw await failure("account read", response);
+  const parsed = AccountSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new Error("Vast.ai sent an account this extension cannot read");
+  const { credit, balance_threshold: threshold, balance_threshold_enabled: on } = parsed.data;
+  return { credit, threshold: on === false ? null : (threshold ?? null) };
 }
 
 function authorized(key: string, method: string, json?: unknown): RequestInit {

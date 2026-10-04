@@ -33,25 +33,42 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CREDIT_DEFAULTS, type CreditConfig } from "./credit";
 import { Enforcer, type Judged } from "./enforce";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
-import { boxActions, EXTEND_HOURS, leaseLine, providerCard, statusOf } from "./machine-card";
+import {
+  boxActions,
+  type CreditView,
+  EXTEND_HOURS,
+  leaseLine,
+  providerCard,
+  statusOf,
+} from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
 import { parseLabel } from "./rules";
 import { sshCommand, sshTarget } from "./run";
 import { makeTools } from "./tools";
-import { destroyInstance, type Instance, listInstances, readApiKeys, withKeys } from "./vast-api";
+import {
+  destroyInstance,
+  getAccount,
+  type Instance,
+  listInstances,
+  readApiKeys,
+  withKeys,
+} from "./vast-api";
 
 /**
  * `sshKey`: the private key your boxes accept, for the terminal a click opens
  * and the save and guard the leases run. `enforce`: destroy what breaks a lease.
+ * `credit`: the margin kept free of the account's credit, and the runway warnings.
  */
 type Config = {
   refreshSeconds: number;
   sshKey: string | null;
   enforce: boolean;
   owner: string;
+  credit: CreditConfig;
 };
 
 const IDLE_PCT = 20;
@@ -65,18 +82,43 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
   const labels = new Map<number, string>();
   let stopped = false;
   let busy = false;
+  // The credit is read with the boxes; a failure is logged and the boxes still show.
+  const readCredit = async (
+    boxes: readonly Instance[],
+    leases: Parameters<Enforcer["creditRound"]>[2],
+    now: number,
+  ): Promise<CreditView | null> => {
+    try {
+      const account = await withKeys(await keys(), (key) => getAccount(key));
+      const { runway, committed } = enforcer.creditRound(account, boxes, leases, now);
+      return {
+        credit: account.credit,
+        burn: committed.burn,
+        runway,
+        warnHours: config.credit.warnHours,
+      };
+    } catch (caught) {
+      api.log("credit_read_failed", {
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+      return null;
+    }
+  };
   const refresh = async () => {
     if (busy) return;
     busy = true;
     try {
       const boxes = await listInstances(await keys());
-      const judged = await enforcer.round(boxes, Date.now());
+      const now = Date.now();
+      const judged = await enforcer.round(boxes, now);
+      const leases = await readLeases(leasesPath(api.folder));
+      const credit = await readCredit(boxes, leases, now);
       if (!stopped) {
         remember(labels, boxes);
         show(api, boxes, judged, config);
         // Absent on a prifly older than "machines": the boxes still show.
-        const waiting = (await readLeases(leasesPath(api.folder))).filter((l) => l.box === null);
-        api.machines?.report(machinesOf(boxes, config, judged, waiting));
+        const waiting = leases.filter((l) => l.box === null);
+        api.machines?.report(machinesOf(boxes, config, judged, waiting, credit));
       }
     } catch (caught) {
       // No API key, a refused one, or offline: said in the log, and tried
@@ -100,6 +142,8 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       sleep: Bun.sleep,
       refresh: () => void refresh(),
       log: (event, fields) => api.log(event, fields),
+      features: api.features ?? [],
+      credit: config.credit,
     }),
   );
   api.onAction(async (key, action) => {
@@ -148,6 +192,22 @@ async function readConfig(folder: string): Promise<Config> {
     sshKey: raw.sshKey == null ? null : raw.sshKey.replace(/^~(?=\/)/, homedir()),
     enforce: raw.enforce === true,
     owner: await readOwner(folder, process.env),
+    credit: creditConfig(raw.credit),
+  };
+}
+
+/** `credit` in `config.json`, each setting that is a usable number kept, the rest the defaults. */
+function creditConfig(raw: Partial<CreditConfig> | undefined): CreditConfig {
+  const number = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+  const warn = Array.isArray(raw?.warnHours)
+    ? raw.warnHours.filter((h): h is number => typeof h === "number" && h > 0)
+    : [];
+  return {
+    marginPercent: number(raw?.marginPercent, CREDIT_DEFAULTS.marginPercent),
+    marginHours: number(raw?.marginHours, CREDIT_DEFAULTS.marginHours),
+    horizonHours: number(raw?.horizonHours, CREDIT_DEFAULTS.horizonHours),
+    warnHours: warn.length === 0 ? CREDIT_DEFAULTS.warnHours : warn,
   };
 }
 
@@ -249,6 +309,7 @@ function machinesOf(
   config: Config,
   judged: ReadonlyMap<number, Judged>,
   waiting: readonly Lease[],
+  credit: CreditView | null,
 ): ExtensionMachine[] {
   const items = boxes.map((box) =>
     machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id)),
@@ -258,7 +319,7 @@ function machinesOf(
     kind: "provider",
     label: "Vast.ai",
     trust: "ask-first",
-    ...providerCard(waiting),
+    ...providerCard(waiting, credit),
     notes:
       "Rents Linux GPU or CPU boxes by the hour, only through the vast_offers and vast_rent tools: the reader confirms the budget of each rental. Read the vastai skill first.",
     capabilities: [

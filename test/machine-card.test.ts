@@ -133,3 +133,12 @@ describe("the budget in the lease line", () => {
     expect(status.text).toContain("1h 40m left · $7.40 of $20");
   });
 });
+
+test("the provider's card shows the credit, coloured by the runway warnings", () => {
+  const view = (runway: number) => ({ credit: 48.62, burn: 1.35, runway, warnHours: [12, 3, 1] });
+  expect(providerCard([], view(36)).status).toEqual({
+    text: "Credit $48.62 · burn $1.35/h · runway 36h 0m · No bookings waiting",
+  });
+  expect(providerCard([], view(5)).status?.tone).toBe("warning");
+  expect(providerCard([], view(0.5)).status?.tone).toBe("critical");
+});

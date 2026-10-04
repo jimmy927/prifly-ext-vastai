@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   createInstance,
   destroyInstance,
+  getAccount,
   KeyRefused,
   listInstances,
   OfferGone,
@@ -268,5 +269,24 @@ describe("requestLogs", () => {
     expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ tail: "50" });
     expect(seen[1]?.url).toBe("https://logs.example/x");
     expect(new Headers(seen[1]?.init.headers).get("Authorization")).toBeNull();
+  });
+});
+
+describe("getAccount", () => {
+  const answer =
+    (body: unknown, status = 200) =>
+    async () =>
+      new Response(JSON.stringify(body), { status });
+
+  test("the credit, and the threshold only while the auto-stop is on", async () => {
+    const on = { credit: 48.6, balance_threshold: -0.01, balance_threshold_enabled: true };
+    expect(await getAccount("k", answer(on))).toEqual({ credit: 48.6, threshold: -0.01 });
+    const off = { ...on, balance_threshold_enabled: false };
+    expect(await getAccount("k", answer(off))).toEqual({ credit: 48.6, threshold: null });
+  });
+
+  test("an account with no credit to read, or a refused key, is an error", async () => {
+    await expect(getAccount("k", answer({ balance: 0 }))).rejects.toThrow("cannot read");
+    await expect(getAccount("k", answer({ msg: "no" }, 401))).rejects.toBeInstanceOf(KeyRefused);
   });
 });

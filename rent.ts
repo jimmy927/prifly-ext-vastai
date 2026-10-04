@@ -14,12 +14,27 @@
  */
 
 import { z } from "zod";
+import { ACK_TEXT, runwayHours } from "./credit";
 import { book, dropBooking, leasesPath, MAX_AHEAD_MS, updateLeases } from "./leases";
 import { endsTooSoon, fetchOffer, type Offer, timeLeft } from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
-import { defineTool, endText, HOUR_MS, NAME, rateCell, sshText, type ToolDeps } from "./tool-kit";
+import {
+  type CreditGuard,
+  confirmOver,
+  creditGuard,
+  creditNow,
+  defineTool,
+  endText,
+  guardedAmount,
+  HOUR_MS,
+  hasLimit,
+  NAME,
+  rateCell,
+  sshText,
+  type ToolDeps,
+} from "./tool-kit";
 import { createInstance, listInstances, OfferGone, withKeys } from "./vast-api";
 
 const PORT = /^\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/;
@@ -68,7 +83,7 @@ const RentArgs = z.strictObject({
 type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget and waits for their answer; only then is a lease booked and the box created. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
+  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
 
 export function rentTool(deps: ToolDeps): ExtensionTool {
   return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
@@ -133,7 +148,13 @@ async function cardOffers(deps: ToolDeps, args: RentArgs): Promise<Offer[]> {
   );
 }
 
-function cardOf(args: RentArgs, offers: readonly Offer[], now: number): ExtensionPick {
+function cardOf(
+  deps: ToolDeps,
+  args: RentArgs,
+  offers: readonly Offer[],
+  guard: CreditGuard,
+): ExtensionPick {
+  const now = deps.now();
   return {
     title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: COLUMNS,
@@ -143,8 +164,8 @@ function cardOf(args: RentArgs, offers: readonly Offer[], now: number): Extensio
       label: "Budget for this rental",
       prefix: "$",
       value: args.budget,
-      hint: hintOf(args.purpose),
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
+      ...guardedAmount(deps, hintOf(args.purpose), guard),
     },
   };
 }
@@ -162,7 +183,10 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
       `None of the offers can be rented for the budget of ${budgetText(args.budget)} (each is gone, costs more than that per hour, or ends before the budget runs out). Nothing was booked. Search again with vast_offers.`,
     );
   }
-  const answer = await ctx.pick(cardOf(args, offers, deps.now()));
+  // The dearest row's rate: the limit then holds whichever row the reader picks.
+  const dearest = Math.max(...offers.map((offer) => offer.dph_total));
+  const guard = creditGuard(deps, await creditNow(deps, { label }), dearest, ACK_TEXT);
+  const answer = await ctx.pick(cardOf(deps, args, offers, guard));
   if (answer === null) {
     return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
   }
@@ -174,10 +198,45 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
   if (chosen === undefined)
     throw new Error(`The reader's answer names row ${answer.row}, which is not on the card.`);
   const order = [chosen, ...offers.filter((offer) => offer !== chosen)];
-  return await createFirst(deps, { args, label, budget, order, session: ctx.session });
+  const short = await shortfall(deps, ctx, { label, budget, rate: chosen.dph_total });
+  if (short === "declined") {
+    return "The reader did not rent past what the Vast credit covers. Nothing was rented and nothing is booked.";
+  }
+  return await createFirst(deps, { args, label, budget, order, session: ctx.session, short });
 }
 
-type Attempt = { args: RentArgs; label: string; budget: number; order: Offer[]; session: string };
+/** What the confirmed budget is over the credit, read again now: null when it fits or the credit is unknown. */
+type Short = { over: number; max: number; until: number } | null;
+
+/**
+ * Check the confirmed budget against the credit once more. Past it, prifly's
+ * card has already had the reader tick "I will top up"; an older prifly's card
+ * could not, so they are asked on a second one.
+ */
+async function shortfall(
+  deps: ToolDeps,
+  ctx: ExtensionToolContext,
+  { label, budget, rate }: { label: string; budget: number; rate: number },
+): Promise<Short | "declined"> {
+  const credit = await creditNow(deps, { label });
+  const limit = creditGuard(deps, credit, rate, ACK_TEXT).limit;
+  if (credit === null || limit === undefined || budget <= limit.max) return null;
+  const { account, committed } = credit;
+  const until = deps.now() + runwayHours(account, committed.burn + rate) * HOUR_MS;
+  const short = { over: budget - limit.max, max: limit.max, until };
+  deps.log("rent_over_credit", { label, budget, max: limit.max, credit: account.credit });
+  if (hasLimit(deps)) return short;
+  return (await confirmOver(ctx, { what: "Rent", amount: budget, limit })) ? short : "declined";
+}
+
+type Attempt = {
+  args: RentArgs;
+  label: string;
+  budget: number;
+  order: Offer[];
+  session: string;
+  short: Short;
+};
 
 /** Try the offers in order with the confirmed budget; the booking is dropped unless a box was created. */
 async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
@@ -271,7 +330,7 @@ async function tryOffer(
 
 async function describe(
   deps: ToolDeps,
-  { args, label, budget }: Attempt,
+  { args, label, budget, short }: Attempt,
   offer: Offer,
   { id, until }: { id: number; until: number },
 ): Promise<string> {
@@ -282,6 +341,11 @@ async function describe(
     `Rented ${args.name}: Vast.ai #${id}, label ${label}.`,
     `Rate: ${dollars(offer.dph_total)}/h. Budget: ${budgetText(budget)}, the reader's confirmed amount: the box is saved and destroyed when it has cost that much.`,
     `Lease until ${endText(until, deps.now())}; vast_extend adds time. vast_cancel ends it.`,
+    ...(short === null
+      ? []
+      : [
+          `The budget is ${dollars(short.over)} more than the Vast credit covers (${budgetText(short.max)}); the reader said they will top up. At the account's burn the credit runs out about ${endText(short.until, deps.now())}: remind them to top up at console.vast.ai → Billing before then, or Vast stops every box on the account.`,
+        ]),
     ssh === null
       ? "ssh: no address yet; vast_boxes shows it once the box is running."
       : `ssh: ${ssh} (works once the box is running)`,

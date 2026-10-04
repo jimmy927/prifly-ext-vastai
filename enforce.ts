@@ -23,7 +23,15 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
+import {
+  type Account,
+  burnOf,
+  CREDIT_DEFAULTS,
+  type CreditConfig,
+  committedOf,
+  runwayHours,
+} from "./credit";
+import { type Lease, leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import {
   type BoxFacts,
@@ -38,7 +46,7 @@ import {
   type Verdict,
 } from "./rules";
 import { onBox, sshTarget } from "./run";
-import { BUDGET_WARN, budgetText, cappedUntil, spentLine, spentOf } from "./spend";
+import { BUDGET_WARN, budgetText, cappedUntil, dollars, spentLine, spentOf } from "./spend";
 import { destroyInstance, type Fetch, type Instance, readApiKeys, withKeys } from "./vast-api";
 
 export type EnforceConfig = {
@@ -46,6 +54,8 @@ export type EnforceConfig = {
   enforce: boolean;
   /** The label owner this prifly manages: see `owner.ts`. */
   owner: string;
+  /** The margin and the runway warnings: `credit` in `config.json`. */
+  credit?: CreditConfig;
 };
 
 /**
@@ -85,6 +95,9 @@ const SAVE_MS = 10 * 60_000;
 const RETRY_MS = 10 * 60_000;
 /** The guard waits this much longer than the extension, so the extension goes first. */
 const GUARD_MARGIN_MS = 15 * 60_000;
+const HOUR_MS = 3_600_000;
+/** The credit rising by more than this between two rounds is a top-up: billing only ever lowers it. */
+const TOP_UP_DOLLARS = 0.5;
 
 export class Enforcer {
   readonly #api: ExtensionApi;
@@ -101,12 +114,18 @@ export class Enforcer {
   /** Boxes whose guard is being written now: ssh to a box can take a while. */
   readonly #guarding = new Set<number>();
   #stopped = false;
+  /** The credit at the last round, to see a top-up. */
+  #lastCredit: number | null = null;
 
   constructor(api: ExtensionApi, config: EnforceConfig, deps: EnforceDeps = restDeps(api.vault)) {
     this.#api = api;
     this.#config = config;
     this.#deps = deps;
     this.#file = leasesPath(api.folder);
+  }
+
+  get #credit(): CreditConfig {
+    return this.#config.credit ?? CREDIT_DEFAULTS;
   }
 
   get #onBox(): typeof onBox {
@@ -149,6 +168,91 @@ export class Enforcer {
       await this.#act(box, box.id, info);
     }
     return judged;
+  }
+
+  /**
+   * Watch the account's credit against what bills on it: tell the reader once
+   * when the runway falls under each of `warnHours`, and once per budget when a
+   * box's budget runs past the point the credit runs out. A top-up (the credit
+   * going up) is told, and the warnings may be given again. Only warned: Vast.ai's
+   * own auto-stop still acts at the threshold. Hands back what the provider card shows.
+   */
+  creditRound(account: Account, boxes: readonly Instance[], leases: readonly Lease[], now: number) {
+    const committed = committedOf(boxes, leases, now, this.#credit, {});
+    const runway = runwayHours(account, committed.burn);
+    this.#seeTopUp(account.credit, runway);
+    const ends = now + runway * HOUR_MS;
+    const lowest = [...this.#credit.warnHours]
+      .sort((a, b) => a - b)
+      .find((hours) => runway < hours);
+    if (lowest !== undefined) {
+      const text = `Vast credit ${dollars(account.credit)} lasts about ${runwayText(runway)} at the account's burn of ${dollars(committed.burn)}/h (until ${clockOf(ends)}). When it reaches $0, Vast stops every box on the account. Top up at console.vast.ai → Billing.`;
+      const tone = lowest <= Math.min(...this.#credit.warnHours) ? "critical" : "warning";
+      for (const session of this.#creditSessions(boxes))
+        this.#tell(`credit:${lowest}:${session ?? ""}`, text, tone, session);
+    }
+    for (const box of boxes) {
+      const item = this.#shortOf(box, leases, now, runway);
+      if (item === null) continue;
+      this.#tell(
+        `credit-short:${item.id}:${item.budget}`,
+        `${item.name} needs ${dollars(item.rest)} more to reach its budget (${span(item.restHours * HOUR_MS)}), but the Vast credit runs out in about ${runwayText(runway)} (${clockOf(ends)}) at the account's burn. Top up at console.vast.ai → Billing before then, or Vast stops every box on the account.`,
+        "warning",
+        item.session,
+      );
+    }
+    return { account, committed, runway };
+  }
+
+  /** A top-up: the credit went up since the last round. Told when a warning was given, and the warnings may come again. */
+  #seeTopUp(credit: number, runway: number): void {
+    const last = this.#lastCredit;
+    this.#lastCredit = credit;
+    if (last === null || credit <= last + TOP_UP_DOLLARS) return;
+    const warned = [...this.#told].filter((key) => key.startsWith("credit"));
+    for (const key of warned) this.#told.delete(key);
+    this.#api.log("credit_topped_up", { from: last, to: credit });
+    if (warned.length === 0) return;
+    this.#tell(
+      `credit-up:${credit}`,
+      `Vast credit topped up to ${dollars(credit)}: it now lasts ${runwayText(runway)} at the account's burn.`,
+      "info",
+      undefined,
+    );
+  }
+
+  /** The sessions of this prifly's running boxes, or the status bar alone when it has none. */
+  #creditSessions(boxes: readonly Instance[]): (string | undefined)[] {
+    const sessions = new Set<string>();
+    for (const box of boxes) {
+      const parsed = parseLabel(box.label ?? "");
+      if (parsed === null || (parsed.owner !== null && parsed.owner !== this.#config.owner))
+        continue;
+      if (burnOf(box) > 0) sessions.add(parsed.session);
+    }
+    return sessions.size === 0 ? [undefined] : [...sessions];
+  }
+
+  /** A box of this prifly whose budget runs on past the credit's end, or null. */
+  #shortOf(box: Instance, leases: readonly Lease[], now: number, runway: number) {
+    const parsed = parseLabel(box.label ?? "");
+    if (box.id === undefined || parsed === null) return null;
+    if (parsed.owner !== null && parsed.owner !== this.#config.owner) return null;
+    const lease = leaseOf(leases, box.id, box.label ?? "");
+    const spent = spentOf(box, now);
+    const rate = box.dph_total ?? 0;
+    if (lease?.budget == null || spent === null || rate <= 0 || burnOf(box) <= 0) return null;
+    const rest = lease.budget - spent;
+    const restHours = rest / rate;
+    if (rest <= 0 || restHours <= runway) return null;
+    return {
+      id: box.id,
+      name: parsed.name,
+      session: parsed.session,
+      budget: lease.budget,
+      rest,
+      restHours,
+    };
   }
 
   /** This prifly's owner and every session its host knows, read afresh each time. */
@@ -339,6 +443,18 @@ function factsOf(box: Instance, id: number, spent: number | null): BoxFacts {
     spent,
     endsAt: hostEnd(box),
   };
+}
+
+/** "11h 36m", or "as long as nothing bills". */
+function runwayText(hours: number): string {
+  return Number.isFinite(hours) ? span(hours * HOUR_MS) : "as long as nothing bills";
+}
+
+/** "07:10": the time of day, as the reader's clock shows it. */
+function clockOf(epoch: number): string {
+  return Number.isFinite(epoch)
+    ? new Date(epoch).toLocaleTimeString([], { timeStyle: "short" })
+    : "never";
 }
 
 function nameOf(box: Instance): string {

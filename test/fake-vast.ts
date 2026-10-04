@@ -3,6 +3,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CREDIT_DEFAULTS } from "../credit";
 import type {
   ExtensionPick,
   ExtensionPickAnswer,
@@ -41,6 +42,10 @@ type Creates = Record<number, "ok" | "gone" | "error">;
 export function vast(offers: Offer[], creates: Creates = {}) {
   const puts: Put[] = [];
   const instances: Record<string, unknown>[] = [];
+  // The account: plenty of credit unless a test says otherwise; null answers 500.
+  const account: { user: Record<string, unknown> | null } = {
+    user: { credit: 10_000, balance_threshold: -0.01, balance_threshold_enabled: true },
+  };
   const search = (u: URL) => {
     const q = JSON.parse(u.searchParams.get("q") ?? "{}");
     const wanted = q.ask_contract_id?.eq;
@@ -56,11 +61,14 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     instances.push({ id: 9000 + id, label: body["label"], dph_total: 1, start_date: NOW / 1000 });
     return Response.json({ success: true, new_contract: 9000 + id });
   };
+  const user = () =>
+    account.user === null ? new Response("down", { status: 500 }) : Response.json(account.user);
   const get = async (url: string, init: RequestInit): Promise<Response> => {
     const u = new URL(url);
     const put = init.method === "PUT";
     if (u.pathname === "/api/v0/bundles/") return search(u);
     if (u.pathname === "/api/v1/instances/") return Response.json({ instances });
+    if (u.pathname === "/api/v0/users/current/") return user();
     if (put && u.pathname.startsWith("/api/v0/asks/")) {
       return create(url, Number(u.pathname.split("/")[4]), JSON.parse(String(init.body)));
     }
@@ -70,10 +78,10 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     if (url === "https://logs.example/l") return new Response("a\nb\nc\nd");
     return new Response("unexpected", { status: 500 });
   };
-  return { get, puts, instances };
+  return { get, puts, instances, account };
 }
 
-export async function setup(fake: ReturnType<typeof vast>) {
+export async function setup(fake: ReturnType<typeof vast>, features: readonly string[] = []) {
   const folder = await mkdtemp(join(tmpdir(), "vastai-tools-"));
   const tools = makeTools({
     folder,
@@ -85,6 +93,8 @@ export async function setup(fake: ReturnType<typeof vast>) {
     sleep: async () => undefined,
     refresh: () => undefined,
     log: () => undefined,
+    features,
+    credit: CREDIT_DEFAULTS,
   });
   const tool = (name: string): ExtensionTool => {
     const found = tools.find((t) => t.name === name);

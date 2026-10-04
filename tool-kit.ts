@@ -1,10 +1,21 @@
 /** What the tools in `tools.ts` and `rent.ts` share: their dependencies, argument parsing, and finding a session's boxes. */
 
 import { z } from "zod";
-import type { ExtensionApi, ExtensionTool, ExtensionToolContext } from "./prifly-api";
+import {
+  type Account,
+  type Committed,
+  type CreditConfig,
+  committedOf,
+  creditLine,
+  maxBudget,
+  overText,
+} from "./credit";
+import { leasesPath, readLeases } from "./leases";
+import type { ExtensionApi, ExtensionTool, ExtensionToolContext, PickAmount } from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
 import { sshCommand } from "./run";
-import { type Fetch, type Instance, listInstances } from "./vast-api";
+import { budgetText, dollars } from "./spend";
+import { type Fetch, getAccount, type Instance, listInstances, withKeys } from "./vast-api";
 
 /** Everything the tools reach outside themselves, so a test can hand in fakes. */
 export type ToolDeps = {
@@ -20,7 +31,36 @@ export type ToolDeps = {
   /** Ask the display to list the boxes again now. */
   refresh: () => void;
   log: ExtensionApi["log"];
+  /** What the prifly host can do beyond the base contract (`api.features`). */
+  features: readonly string[];
+  credit: CreditConfig;
 };
+
+/** Whether this prifly's pick card takes `amount.limit`. */
+export function hasLimit(deps: ToolDeps): boolean {
+  return deps.features.includes("pick-amount-limit");
+}
+
+/** The account's credit and what is committed on it, without `except`; null when Vast.ai does not say. */
+export async function creditNow(
+  deps: ToolDeps,
+  except: { box?: number; label?: string } = {},
+): Promise<{ account: Account; committed: Committed } | null> {
+  try {
+    const keys = await deps.keys();
+    const [account, boxes, leases] = await Promise.all([
+      withKeys(keys, (key) => getAccount(key, deps.get)),
+      listInstances(keys, deps.get),
+      readLeases(leasesPath(deps.folder)),
+    ]);
+    return { account, committed: committedOf(boxes, leases, deps.now(), deps.credit, except) };
+  } catch (caught) {
+    deps.log("credit_read_failed", {
+      message: caught instanceof Error ? caught.message : String(caught),
+    });
+    return null;
+  }
+}
 
 /** A box name: at most 8 characters, so short displays show it whole. */
 export const NAME = /^[A-Za-z0-9_-]{1,8}$/;
@@ -102,4 +142,74 @@ export function sshText(box: Instance, sshKey: string | null): string | null {
 /** "0.485": a rate for a table cell the pick card does arithmetic on. */
 export function rateCell(rate: number): string {
   return rate.toFixed(3);
+}
+
+/** What a money card says of the account's credit: its limit, or a note when Vast.ai did not say. */
+export type CreditGuard = { limit: PickAmount["limit"]; note: string };
+
+/**
+ * The limit for a budget of a box billing `rate` an hour: what it has `spent`
+ * already (0 for a box not rented yet), plus what the credit covers after
+ * everything else committed and the margin. `ack` is the reader's word to go past it.
+ */
+export function creditGuard(
+  deps: ToolDeps,
+  credit: { account: Account; committed: Committed } | null,
+  rate: number,
+  ack: string,
+  spent = 0,
+): CreditGuard {
+  if (credit === null) {
+    return { limit: undefined, note: "Vast credit unknown: Vast.ai did not answer." };
+  }
+  const { account, committed } = credit;
+  const rest = maxBudget(account, committed, rate, deps.credit);
+  const max = spent === 0 ? rest : Math.floor((spent + rest) * 100) / 100;
+  return {
+    limit: {
+      max,
+      text: creditLine(account, committed, max, rate, deps.credit, spent),
+      over: overText(committed, max),
+      ack,
+    },
+    note: "",
+  };
+}
+
+/**
+ * The amount field's hint and limit: the limit where prifly draws one; on an
+ * older prifly its words go in the hint, so the reader still sees them.
+ */
+export function guardedAmount(
+  deps: ToolDeps,
+  hint: string,
+  guard: CreditGuard,
+): Pick<PickAmount, "hint" | "limit"> {
+  const words = hasLimit(deps) ? guard.note : (guard.limit?.text ?? guard.note);
+  return {
+    hint: words === "" ? hint : `${hint} ${words}`,
+    ...(hasLimit(deps) && guard.limit !== undefined ? { limit: guard.limit } : {}),
+  };
+}
+
+/**
+ * An amount past the limit, on a prifly whose card could not ask for the
+ * reader's word: ask on a second card. True when they gave it.
+ */
+export async function confirmOver(
+  ctx: ExtensionToolContext,
+  {
+    what,
+    amount,
+    limit,
+  }: { what: string; amount: number; limit: NonNullable<PickAmount["limit"]> },
+): Promise<boolean> {
+  const short = amount - limit.max;
+  const answer = await ctx.pick({
+    title: `${what} anyway? A budget of ${budgetText(amount)} is ${dollars(short)} more than the Vast credit covers. ${limit.over}`,
+    columns: ["Budget", "Credit covers", "Short by"],
+    rows: [[budgetText(amount), budgetText(limit.max), dollars(short)]],
+    action: limit.ack,
+  });
+  return answer !== null;
 }

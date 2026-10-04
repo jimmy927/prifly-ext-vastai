@@ -42,7 +42,10 @@ describe("vast_boxes", () => {
   test("lists this session's boxes only, with spend of budget, lease end and ssh", async () => {
     const { tool } = await withBox(10);
     const text = await tool("vast_boxes").call({}, ctxFor([]).ctx);
-    expect(text.split("\n")).toHaveLength(1);
+    expect(text.split("\n")).toHaveLength(2);
+    expect(text.split("\n")[0]).toMatch(
+      /^Account: credit \$10000\.00 · burn \$2\.00\/h · runway 5000h 0m · committed \$8\.00$/,
+    );
     expect(text).toContain("job1 (#7): running");
     expect(text).toContain("$2.00/h");
     expect(text).toContain("$2.00 of $10");

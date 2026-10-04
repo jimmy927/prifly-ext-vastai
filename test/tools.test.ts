@@ -101,7 +101,8 @@ describe("vast_rent", () => {
       label: "Budget for this rental",
       prefix: "$",
       value: 20,
-      hint: "Suggested by Claude: fine-tune a 4B model for about 3 hours. The box is saved and destroyed when it has cost this much.",
+      // An older prifly draws no limit, so the credit is said in the hint.
+      hint: "Suggested by Claude: fine-tune a 4B model for about 3 hours. The box is saved and destroyed when it has cost this much. Vast credit $10000.00 − committed $0.00 − margin $909.00 → covers a budget up to $9090.",
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
     });
   });

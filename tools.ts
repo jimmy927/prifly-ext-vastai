@@ -10,6 +10,7 @@
  */
 
 import { z } from "zod";
+import { available, RAISE_ACK, runwayHours } from "./credit";
 import {
   cancel,
   extend,
@@ -29,9 +30,14 @@ import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
 import { budgetEnd, budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
 import {
   boxLabels,
+  confirmOver,
+  creditGuard,
+  creditNow,
   defineTool,
   endText,
+  guardedAmount,
   HOUR_MS,
+  hasLimit,
   NAME,
   type OwnBox,
   ownBoxes,
@@ -140,17 +146,34 @@ function boxLine({ box, id, name }: OwnBox, lease: Lease | null, deps: ToolDeps)
 function boxesTool(deps: ToolDeps): ExtensionTool {
   return defineTool(
     "vast_boxes",
-    "This session's Vast.ai boxes with status, rate, spent of budget, lease end, the host's end date (when the box is saved and destroyed 30 minutes before) and ssh command. Boxes of other sessions are not listed.",
+    "The Vast.ai account's credit, burn and runway, then this session's boxes with status, rate, spent of budget, lease end, the host's end date (when the box is saved and destroyed 30 minutes before) and ssh command. Boxes of other sessions are not listed, but their spend is in the account line.",
     z.strictObject({}),
     async (_args, ctx) => {
-      const [boxes, leases] = await Promise.all([
+      const [boxes, leases, credit] = await Promise.all([
         ownBoxes(deps, ctx.session),
         readLeases(leasesPath(deps.folder)),
+        creditNow(deps),
       ]);
-      if (boxes.length === 0) return "This session has no Vast.ai boxes.";
-      return boxes.map((b) => boxLine(b, leaseOf(leases, b.id, b.label), deps)).join("\n");
+      const lines = boxes.map((b) => boxLine(b, leaseOf(leases, b.id, b.label), deps));
+      return [
+        accountLine(credit),
+        ...(lines.length === 0 ? ["This session has no Vast.ai boxes."] : lines),
+      ].join("\n");
     },
   );
+}
+
+/** "Account: credit $48.62 · burn $1.35/h · runway 36 h · committed $41.30". */
+function accountLine(credit: Awaited<ReturnType<typeof creditNow>>): string {
+  if (credit === null) return "Account: credit unknown (Vast.ai did not answer).";
+  const { account, committed } = credit;
+  const hours = runwayHours(account, committed.burn);
+  const runway = Number.isFinite(hours) ? span(hours * HOUR_MS) : "no end (nothing bills)";
+  const short =
+    committed.total > available(account)
+      ? ` · the credit does not cover what is committed: top up at console.vast.ai → Billing`
+      : "";
+  return `Account: credit ${dollars(account.credit)} · burn ${dollars(committed.burn)}/h · runway ${runway} · committed ${dollars(committed.total)}${short}`;
 }
 
 function logsTool(deps: ToolDeps): ExtensionTool {
@@ -241,6 +264,9 @@ async function askRaise(
 ): Promise<number | null> {
   const rate = box.box.dph_total ?? 0;
   const spent = spentOf(box.box, deps.now()) ?? 0;
+  const credit = await creditNow(deps, { box: box.id });
+  const guard = creditGuard(deps, credit, rate, RAISE_ACK, spent);
+  const hint = `Suggested by Claude: ${hours} more hours at ${rateCell(rate)} per hour, ${dollars(need)} in all. The box is saved and destroyed when it has cost this much.`;
   const answer = await ctx.pick({
     title: `Raise the budget of ${box.name}? ${hours} more hours would cost ${dollars(need)} in all, more than its budget of ${budgetText(lease.budget ?? 0)}.`,
     columns: ["Box", "$/h", "Spent", "Budget", "Extend by", "New lease end"],
@@ -259,14 +285,19 @@ async function askRaise(
       label: `New budget for ${box.name}`,
       prefix: "$",
       value: suggestion(need),
-      hint: `Suggested by Claude: ${hours} more hours at ${rateCell(rate)} per hour, ${dollars(need)} in all. The box is saved and destroyed when it has cost this much.`,
+      ...guardedAmount(deps, hint, guard),
     },
   });
   if (answer === null) return null;
   if (answer.amount === null || !Number.isFinite(answer.amount) || answer.amount <= 0) {
     throw new Error("The reader's answer carried no budget, so nothing was changed.");
   }
-  return answer.amount;
+  const { limit } = guard;
+  if (limit === undefined || answer.amount <= limit.max) return answer.amount;
+  deps.log("raise_over_credit", { instance: box.id, budget: answer.amount, max: limit.max });
+  if (hasLimit(deps)) return answer.amount;
+  const sure = await confirmOver(ctx, { what: "Raise", amount: answer.amount, limit });
+  return sure ? answer.amount : null;
 }
 
 /** Raise the budget if one was confirmed, then add as many of the hours as the budget allows. */

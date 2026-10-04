@@ -118,6 +118,13 @@ export type PickAmount = {
    * and its header "Hours in <prefix><amount>".
    */
   perRow?: { column: string; rateColumn: string; unit: string };
+  /**
+   * A soft limit: `text` is always shown under the hint; past `max` the field
+   * warns with `over`, and the button waits until the reader ticks `ack`.
+   * Only on a prifly whose `features` include "pick-amount-limit": an older
+   * one refuses the field.
+   */
+  limit?: { max: number; text: string; over: string; ack: string };
 };
 
 /** What an extension tool asks the reader: prifly's pick card, optionally with an amount. */
@@ -169,6 +176,8 @@ export type ExtensionVaultApi = {
 };
 
 export type ExtensionApi = {
+  /** What this prifly host can do beyond the base contract: "pick-amount-limit". Absent on an older one. */
+  features?: readonly string[];
   /**
    * The vault's API tokens this extension's manifest names under `vault`.
    * Absent on a prifly host older than "extension vault" — call it as

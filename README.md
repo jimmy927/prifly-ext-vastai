@@ -229,6 +229,58 @@ you confirmed on the rental card.
   the extension only says "Would destroy lc-box3 (no lease)". Notices go
   through prifly's `api.notify`, and only to the log on a prifly without it.
 
+### The account's credit: `credit.ts`
+
+Every box on the Vast.ai account draws on one credit: this prifly's boxes,
+another prifly's, boxes rented by hand, and serverless endpoints' workers
+(labelled `<endpoint>:<endpoint id>:<group id>`). When the credit falls below
+the account's `balance_threshold` (about $0), Vast.ai stops all of them at
+once. On 3 October 2026 a $60 budget was confirmed against $58.55 of credit
+that two serverless endpoints also drew on; the run would have stalled near
+its end. The extension now checks every booking against the credit.
+
+- **Reading it.** `GET /api/v0/users/current/` gives `credit` and the
+  threshold, read with each minute's box list and by each money card.
+- **What is committed.** A running box of this prifly with a budget will cost
+  the rest of it (`vast_extend` is free within it). A leased box with no
+  budget costs its burn to the lease's end. Every other box, and every
+  serverless worker, costs its burn for `horizonHours`: `dph_total` while
+  running, `storage_total_cost` (the disk) while stopped. A booking not rented
+  yet costs its budget.
+- **The margin.** On top of a new budget and what is committed, the larger of
+  `marginPercent` of the two and `marginHours` of the account's burn, the new
+  box included, is kept free.
+- **On the card.** `vast_rent`'s card shows the breakdown under the budget:
+  "Vast credit $120.00 − committed $41.30 (jtrain2: $38.20 left of its budget ·
+  serverless rj-judge, rj-reranker: $3.10 over 24 h) − margin $16.70 → covers
+  a budget up to $62". Past that amount the field turns amber, a warning says
+  what happens at $0, and **Rent** waits until you tick "Rent anyway: I will
+  top up before the credit runs out". The session is then told when the
+  credit runs out, to remind you. **Raise budget** on `vast_extend` does the
+  same, counting what the box has spent already. The limit needs a prifly
+  whose `api.features` include `pick-amount-limit`. On an older one, the
+  breakdown goes in the hint, and a budget past it is asked about again on a
+  second card.
+- **While boxes run.** Each minute the runway (the credit ÷ the account's
+  burn) is checked. Under each of `warnHours` you are told once, on the
+  sessions whose boxes bill, or in the status bar when none of this prifly's
+  do. A box whose budget runs on past the point the credit runs out is told to
+  its session, once per budget. The extension only warns: Vast.ai's own
+  auto-stop still acts at the threshold. The Vast.ai provider card shows the
+  credit, burn and runway, amber or red under the warnings.
+- **Topping up.** Vast.ai has no API that adds credit: top up at
+  console.vast.ai → Billing, or turn on its auto-billing there. The next
+  minute's read sees the credit rise, says so if you were warned, and lets
+  the warnings come again.
+- **If Vast.ai does not answer**, the card says "Vast credit unknown" and holds
+  nothing back.
+
+Settings, in `config.json` (these are the defaults):
+
+```json
+{ "credit": { "marginPercent": 10, "marginHours": 3, "horizonHours": 24, "warnHours": [12, 3, 1] } }
+```
+
 ### Your ssh key
 
 Vast.ai boxes accept the key your account registered (on the console's
@@ -289,7 +341,7 @@ tool acts on the calling session's boxes only.
 |---|---|
 | `vast_offers` | The cheapest rentable GPU machines that pass the filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `min_hours`, `limit` default 10), from the public `GET /api/v0/bundles/`. No key. Returns offer ids. |
 | `vast_rent` | `name` (8 characters at most), `budget`, `offers`, `image`, `disk_gb`, `purpose`, optionally `onstart`, `env`, `ports`. Shows the card; books and creates only after the reader's click. |
-| `vast_boxes` | This session's boxes: status, $/h, spent of budget, lease end, ssh. |
+| `vast_boxes` | The account's credit, burn, runway and committed spend, then this session's boxes: status, $/h, spent of budget, lease end, ssh. |
 | `vast_logs` | `name`, `tail`: asks Vast.ai for the box's logs (`PUT /api/v0/instances/request_logs/<id>/`), fetches the returned URL, returns the end. |
 | `vast_extend` | `name`, `hours`: free within the budget, otherwise asks the reader to raise it. |
 | `vast_cancel` | `name`: ends the lease; the enforcer saves and destroys the box within a minute. |
@@ -321,7 +373,7 @@ terminal session that installed the plugin, with no `node_modules`.
 ### The skill: `skills/vastai`
 
 `skills/vastai/SKILL.md` holds the general rules, numbered VAI-1 onward:
-- checking your credit before renting several boxes;
+- the one credit every box on the account draws on, and topping it up;
 - registering an ssh key before renting;
 - suggesting a budget, and what the budget does;
 - how the tools label, book and tear down;
@@ -634,6 +686,7 @@ prompt, or your skill.
 | `prifly-extension.json` | The manifest: id, name, `main`, `prompt`, the menu item |
 | `index.ts` | The display: polls Vast.ai, shows boxes on sessions |
 | `leases.ts`, `spend.ts`, `rules.ts`, `enforce.ts` | Leases and budgets: the store, what a box has cost, the rules, carrying them out |
+| `credit.ts` | The account's credit against what is committed on it: the limit on the money cards, the runway |
 | `guard.sh` | The on-box guard that destroys a box whose lease is over while prifly is closed |
 | `tools.ts`, `rent.ts`, `tool-kit.ts` | The MCP tools sessions rent, extend, cancel and inspect boxes with |
 | `offers.ts` | The public marketplace search and one offer's price, over `GET /api/v0/bundles/` |
@@ -645,4 +698,4 @@ prompt, or your skill.
 | `skills/vastai/SKILL.md` | The Claude Code skill: money and budgets, the tools, cleanup, choosing offers, the ssh traps |
 | `.claude-plugin/plugin.json`, `marketplace.json` | Makes the folder a Claude Code plugin, and installable without prifly |
 | `owner.ts` | The label owner, from `config.json` or `$USER`, for the extension and its tools alike |
-| `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, `owner` (else `$USER`) |
+| `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, `owner` (else `$USER`), `credit` |

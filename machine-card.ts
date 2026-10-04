@@ -7,7 +7,7 @@ import type { Judged } from "./enforce";
 import type { Lease } from "./leases";
 import type { DecorationAction, DecorationTone, ExtensionMachine } from "./prifly-api";
 import { IDLE_MS, parseLabel, span } from "./rules";
-import { BUDGET_WARN, spentLine } from "./spend";
+import { BUDGET_WARN, dollars, spentLine } from "./spend";
 
 /** "$7.40 of $20" for a box with a budget, else null. */
 function costOf({ spent, budget }: Judged): string | null {
@@ -106,17 +106,34 @@ export function statusOf(
   }
 }
 
-/** Bookings not yet bound to a box, on the provider's card; its menu is there but off. */
+/** The account's credit as the provider's card shows it: what is left, what bills an hour, and how long it lasts. */
+export type CreditView = { credit: number; burn: number; runway: number; warnHours: number[] };
+
+/** "Credit $48.62 · burn $1.35/h · runway 36h 0m", coloured by the runway warnings. */
+function creditStatus(view: CreditView): { text: string; tone?: DecorationTone } {
+  const runway = Number.isFinite(view.runway) ? span(view.runway * 3_600_000) : "no end";
+  const text = `Credit ${dollars(view.credit)} · burn ${dollars(view.burn)}/h · runway ${runway}`;
+  const lowest = Math.min(...view.warnHours);
+  const highest = Math.max(...view.warnHours);
+  if (view.runway < lowest) return { text, tone: "critical" };
+  return view.runway < highest ? { text, tone: "warning" } : { text };
+}
+
+/** The credit and the bookings not yet bound to a box, on the provider's card; its menu is there but off. */
 export function providerCard(
   waiting: readonly Lease[],
+  credit: CreditView | null = null,
 ): Pick<ExtensionMachine, "status" | "actions"> {
-  const text =
+  const bookings =
     waiting.length === 0
       ? "No bookings waiting"
       : `${waiting.length} booking${waiting.length === 1 ? "" : "s"} waiting: ${waiting
           .map((l) => `${parseLabel(l.label)?.name ?? l.label}, ${hours(l.until - l.bookedAt)} h`)
           .join(", ")}`;
-  return { status: { text }, actions: boxActions("?", "a box", "", undefined, true) };
+  const account = credit === null ? null : creditStatus(credit);
+  const status =
+    account === null ? { text: bookings } : { ...account, text: `${account.text} · ${bookings}` };
+  return { status, actions: boxActions("?", "a box", "", undefined, true) };
 }
 
 function hours(ms: number): string {
