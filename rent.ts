@@ -4,7 +4,8 @@
  *
  * The session proposes offers (best first) and a budget. Each offer is fetched
  * again for today's price, and the ones that are gone, or that could not run
- * an hour within the budget, are left off. What is left goes on prifly's pick
+ * an hour within the budget, or whose host end date comes before the budget's
+ * runtime (held to 24 hours) plus an hour's margin, are left off. What is left goes on prifly's pick
  * card with the budget as an editable amount; nothing is booked or created
  * before the reader answers. The lease is booked with the amount the reader
  * CONFIRMED, not the one suggested, and its end is held to the hour that budget
@@ -14,7 +15,7 @@
 
 import { z } from "zod";
 import { book, dropBooking, leasesPath, MAX_AHEAD_MS, updateLeases } from "./leases";
-import { fetchOffer, type Offer } from "./offers";
+import { endsTooSoon, fetchOffer, type Offer, timeLeft } from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
@@ -67,7 +68,7 @@ const RentArgs = z.strictObject({
 type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget and waits for their answer; only then is a lease booked and the box created. Offers that are gone, or could not run an hour within the budget, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
+  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget and waits for their answer; only then is a lease booked and the box created. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
 
 export function rentTool(deps: ToolDeps): ExtensionTool {
   return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
@@ -90,12 +91,18 @@ const COLUMNS = [
   "Disk",
   "$/h",
   "Hours",
+  "Ends in",
   "Reliability",
   "Location",
   "Offer",
 ];
 
-function rowOf(offer: Offer, budget: number): string[] {
+/** Hours the box is meant to run: what the budget buys, held to the longest lease. */
+function runHours(offer: Offer, budget: number): number {
+  return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
+}
+
+function rowOf(offer: Offer, budget: number, now: number): string[] {
   const gpus = (offer.num_gpus ?? 1) > 1 ? `${offer.num_gpus}x ` : "";
   const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
   return [
@@ -106,26 +113,31 @@ function rowOf(offer: Offer, budget: number): string[] {
     `${Math.round(offer.disk_space ?? 0)} GB`,
     rateCell(offer.dph_total),
     (budget / offer.dph_total).toFixed(1),
+    timeLeft(offer, now) ?? "no end date",
     (offer.reliability ?? 0).toFixed(3),
     offer.geolocation ?? "?",
     String(offer.ask_contract_id),
   ];
 }
 
-/** Today's offers for the ids, in the session's order, without those gone or too dear for an hour. */
+/** Today's offers for the ids, in the session's order, without those gone, too dear for an hour or ending before the budget runs out. */
 async function cardOffers(deps: ToolDeps, args: RentArgs): Promise<Offer[]> {
   const ids = [...new Set(args.offers)];
   const found = await Promise.all(ids.map((id) => fetchOffer(id, args.disk_gb, deps.get)));
   return found.flatMap((offer) =>
-    offer !== null && offer.dph_total <= args.budget ? [offer] : [],
+    offer !== null &&
+    offer.dph_total <= args.budget &&
+    !endsTooSoon(offer, runHours(offer, args.budget), deps.now())
+      ? [offer]
+      : [],
   );
 }
 
-function cardOf(args: RentArgs, offers: readonly Offer[]): ExtensionPick {
+function cardOf(args: RentArgs, offers: readonly Offer[], now: number): ExtensionPick {
   return {
     title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: COLUMNS,
-    rows: offers.map((offer) => rowOf(offer, args.budget)),
+    rows: offers.map((offer) => rowOf(offer, args.budget, now)),
     action: "Rent",
     amount: {
       label: "Budget for this rental",
@@ -147,10 +159,10 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
   const offers = await cardOffers(deps, args);
   if (offers.length === 0) {
     throw new Error(
-      `None of the offers can be rented for the budget of ${budgetText(args.budget)} (each is gone, or costs more than that per hour). Nothing was booked. Search again with vast_offers.`,
+      `None of the offers can be rented for the budget of ${budgetText(args.budget)} (each is gone, costs more than that per hour, or ends before the budget runs out). Nothing was booked. Search again with vast_offers.`,
     );
   }
-  const answer = await ctx.pick(cardOf(args, offers));
+  const answer = await ctx.pick(cardOf(args, offers, deps.now()));
   if (answer === null) {
     return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
   }
@@ -188,6 +200,18 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
   );
 }
 
+/** Why the offer cannot be rented for the confirmed budget, or null when it can. */
+function refusalOf(offer: Offer, budget: number, hours: number, now: number): string | null {
+  const id = offer.ask_contract_id;
+  if (offer.dph_total > budget) {
+    return `offer ${id} costs ${rateCell(offer.dph_total)} per hour, more than the confirmed budget`;
+  }
+  if (endsTooSoon(offer, hours, now)) {
+    return `offer ${id} ends in ${timeLeft(offer, now)}, before the ${hours.toFixed(1)} h the budget runs plus an hour's margin`;
+  }
+  return null;
+}
+
 /** Look at the offer again, book the lease and create the box; the box and its lease end, or null with the reason noted. */
 async function tryOffer(
   deps: ToolDeps,
@@ -202,16 +226,15 @@ async function tryOffer(
     failures.push(`offer ${id} is gone`);
     return null;
   }
-  if (fresh.dph_total > budget) {
-    failures.push(
-      `offer ${id} costs ${rateCell(fresh.dph_total)} per hour, more than the confirmed budget`,
-    );
+  const now = deps.now();
+  const hours = runHours(fresh, budget);
+  const refusal = refusalOf(fresh, budget, hours, now);
+  if (refusal !== null) {
+    failures.push(refusal);
     // The reader chose this one: another box in its place would not be what they approved.
     if (chosen) throw new Error(failures.join("; "));
     return null;
   }
-  const now = deps.now();
-  const hours = Math.min(MAX_AHEAD_MS / HOUR_MS, budget / fresh.dph_total);
   await updateLeases(leasesPath(deps.folder), (leases) => book(leases, label, hours, now, budget));
   const until = now + hours * HOUR_MS;
   const request = {

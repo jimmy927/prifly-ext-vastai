@@ -41,6 +41,10 @@ export const OfferSchema = z.object({
   /** Mbps. */
   inet_down: field(z.number()),
   rentable: field(z.boolean()),
+  /** Epoch seconds: the host's end date; Vast stops a rented box then. */
+  end_date: field(z.number()),
+  /** Seconds left until `end_date`, as of the search. */
+  duration: field(z.number()),
 });
 export type Offer = z.infer<typeof OfferSchema>;
 
@@ -56,6 +60,8 @@ export type OfferFilters = {
   /** A substring of the location, any case: "SE", "Sweden", "US". */
   region?: string | undefined;
   minInetDownMbps?: number | undefined;
+  /** Hours the box must stay rentable: the host's end date is at least this far off. */
+  minHours?: number | undefined;
   limit: number;
 };
 
@@ -76,7 +82,8 @@ async function bundles(query: Record<string, unknown>, get: Fetch): Promise<Offe
 
 /** The server-side half of a search; the rest is checked locally in `matches`. */
 function queryOf(filters: OfferFilters): Record<string, unknown> {
-  const { minVramGb, minCpuCores, minRamGb, minDiskGb, maxDph, minInetDownMbps } = filters;
+  const { minVramGb, minCpuCores, minRamGb, minDiskGb, maxDph, minInetDownMbps, minHours } =
+    filters;
   return {
     rentable: { eq: true },
     num_gpus: { gte: 1 },
@@ -87,6 +94,7 @@ function queryOf(filters: OfferFilters): Record<string, unknown> {
     ...(minDiskGb === undefined ? {} : { disk_space: { gte: minDiskGb } }),
     ...(maxDph === undefined ? {} : { dph_total: { lte: maxDph } }),
     ...(minInetDownMbps === undefined ? {} : { inet_down: { gte: minInetDownMbps } }),
+    ...(minHours === undefined ? {} : { duration: { gte: minHours * 3600 } }),
     allocated_storage: minDiskGb ?? DEFAULT_DISK_GB,
     limit: 64,
     type: "ask",
@@ -99,6 +107,10 @@ export function matches(offer: Offer, filters: OfferFilters): boolean {
   const below = (value: number | undefined, least: number | undefined, unit = 1) =>
     least !== undefined && (value ?? 0) < least * unit;
   if (offer.rentable === false) return false;
+  // An offer with no end date has no limit to fail.
+  if (filters.minHours !== undefined && (offer.duration ?? Infinity) < filters.minHours * 3600) {
+    return false;
+  }
   if (maxDph !== undefined && offer.dph_total > maxDph) return false;
   if ((offer.reliability ?? 0) < filters.minReliability) return false;
   if (gpu !== undefined && !(offer.gpu_name ?? "").toLowerCase().includes(gpu.toLowerCase())) {
@@ -117,6 +129,26 @@ export function matches(offer: Offer, filters: OfferFilters): boolean {
     below(offer.disk_space, minDiskGb) ||
     below(offer.inet_down, filters.minInetDownMbps)
   );
+}
+
+/** Whether the host's end date falls before `hours` of running plus an hour's margin from `nowMs`. */
+export function endsTooSoon(offer: Offer, hours: number, nowMs: number): boolean {
+  return offer.end_date != null && offer.end_date * 1000 < nowMs + (hours + 1) * 3_600_000;
+}
+
+/** How long until the offer's end date, as of `nowMs`: "3 d 4 h", "9 h", "40 min"; null with no end date. */
+export function timeLeft(offer: Offer, nowMs: number): string | null {
+  if (offer.end_date == null) return null;
+  const minutes = Math.max(0, Math.floor((offer.end_date * 1000 - nowMs) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 24) return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+  return hours >= 1 ? `${hours} h` : `${minutes} min`;
+}
+
+/** `timeLeft` as a phrase: "ends in 3 d 4 h", "no end date". */
+export function endsInText(offer: Offer, nowMs: number): string {
+  const left = timeLeft(offer, nowMs);
+  return left === null ? "no end date" : `ends in ${left}`;
 }
 
 /** The cheapest offers that pass the filters, cheapest first, at most `limit`. */

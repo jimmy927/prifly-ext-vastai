@@ -22,7 +22,7 @@ import {
   readLeases,
   updateLeases,
 } from "./leases";
-import { type OfferFilters, searchOffers } from "./offers";
+import { endsInText, type OfferFilters, searchOffers } from "./offers";
 import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
 import { span } from "./rules";
@@ -80,6 +80,13 @@ const OffersArgs = z.strictObject({
     .describe("Host reliability floor; below 0.98 hosts drop jobs"),
   region: z.string().optional().describe("Part of the location, any case: SE, Sweden, US"),
   min_inet_down_mbps: z.number().positive().optional(),
+  min_hours: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      "Hours the box must stay rentable; hosts set an end date after which Vast stops the box. Offers with no end date always pass.",
+    ),
   limit: z.number().int().min(1).max(50).default(10),
 });
 
@@ -99,13 +106,15 @@ function offersTool(deps: ToolDeps): ExtensionTool {
         minReliability: args.min_reliability,
         region: args.region,
         minInetDownMbps: args.min_inet_down_mbps,
+        minHours: args.min_hours,
         limit: args.limit,
       };
       const offers = await searchOffers(filters, deps.get);
       if (offers.length === 0) return "No offers pass these filters. Loosen one and search again.";
+      const now = deps.now();
       const lines = offers.map((o) => {
         const gpus = (o.num_gpus ?? 1) > 1 ? `${o.num_gpus}x ` : "";
-        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${Math.round((o.gpu_ram ?? 0) / 1000)} GB VRAM · ${Math.round(o.cpu_cores_effective ?? 0)} cores · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · ${o.geolocation ?? "?"} · ${Math.round(o.inet_down ?? 0)} Mbps down`;
+        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${Math.round((o.gpu_ram ?? 0) / 1000)} GB VRAM · ${Math.round(o.cpu_cores_effective ?? 0)} cores · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · ${o.geolocation ?? "?"} · ${Math.round(o.inet_down ?? 0)} Mbps down · ${endsInText(o, now)}`;
       });
       return `${lines.join("\n")}\n\nRates include the disk. Offers go in a moment: vast_rent looks each up again.`;
     },

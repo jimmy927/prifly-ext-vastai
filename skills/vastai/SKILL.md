@@ -51,7 +51,7 @@ The tools talk to Vast.ai with the API key `vastai set api-key <key>` stored in
 `~/.config/vastai/vast_api_key`; the reader stores it once. Reading the
 marketplace needs no key.
 
-1. `vast_offers` with filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`): the cheapest offers that pass, with their offer ids. For a CPU job, rank with the rules below and hand the chosen offer ids on.
+1. `vast_offers` with filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `min_hours`): the cheapest offers that pass, with their offer ids and time left before the host's end date. Set `min_hours` to the job length: Vast stops a box at its offer's end date, and `vast_rent` refuses an offer that ends before its budget runs out plus an hour. For a CPU job, rank with the rules below and hand the chosen offer ids on.
 2. `vast_rent` with `name`, `budget`, `offers` (ids, best first), `image`, `disk_gb`, `purpose`, and optionally `onstart`, `env`, `ports`. The reader answers on the card.
 3. `vast_boxes` for its ssh address once it runs; `vast_logs <name>` if it does not.
 

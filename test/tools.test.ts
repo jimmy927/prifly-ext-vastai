@@ -34,6 +34,22 @@ describe("vast_offers", () => {
     expect(text).toContain("0.300/h");
   });
 
+  test("min_hours drops offers that end sooner, keeps those with no end date, and the time left is shown", async () => {
+    const at = (hours: number) => NOW / 1000 + hours * 3600;
+    const fake = vast([
+      offer(1, 0.1, { end_date: at(9), duration: 9 * 3600 }),
+      offer(2, 0.2, { end_date: at(76), duration: 76 * 3600 }),
+      offer(3, 0.3),
+    ]);
+    const { tool } = await setup(fake);
+    const text = await tool("vast_offers").call({ min_hours: 24 }, ctxFor([]).ctx);
+    const lines = text.split("\n").filter((l) => l.startsWith("offer "));
+    expect(lines.map((l) => l.split(":")[0])).toEqual(["offer 2", "offer 3"]);
+    expect(lines[0]).toContain("ends in 3 d 4 h");
+    expect(lines[1]).toContain("no end date");
+    expect(await tool("vast_offers").call({}, ctxFor([]).ctx)).toContain("ends in 9 h");
+  });
+
   test("says so when nothing passes", async () => {
     const { tool } = await setup(vast([]));
     expect(await tool("vast_offers").call({}, ctxFor([]).ctx)).toContain("No offers pass");
@@ -72,12 +88,13 @@ describe("vast_rent", () => {
       "Disk",
       "$/h",
       "Hours",
+      "Ends in",
       "Reliability",
       "Location",
       "Offer",
     ]);
     expect(card?.action).toBe("Rent");
-    expect(card?.rows.map((r) => r[9])).toEqual(["101", "102"]);
+    expect(card?.rows.map((r) => r[10])).toEqual(["101", "102"]);
     expect(card?.rows[0]?.[5]).toBe("0.500");
     expect(card?.rows[0]?.[6]).toBe("40.0");
     expect(card?.amount).toEqual({
@@ -95,7 +112,52 @@ describe("vast_rent", () => {
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
     await tool("vast_rent").call(RENT, ctx);
     // 102 is not on the market any more; 103 costs 25 an hour against a budget of 20.
-    expect(cards[0]?.rows.map((r) => r[9])).toEqual(["101"]);
+    expect(cards[0]?.rows.map((r) => r[10])).toEqual(["101"]);
+  });
+
+  test("an offer that ends before the budget's runtime plus an hour is left off, and the card shows time left", async () => {
+    const at = (hours: number) => NOW / 1000 + hours * 3600;
+    // Budget 20: 101 and 102 run 24 h (held to the longest lease) and need 25 h of end date.
+    const fake = vast([
+      offer(101, 0.5, { end_date: at(24.5) }),
+      offer(102, 0.4, { end_date: at(30) }),
+      offer(103, 0.4, { end_date: at(80) }),
+    ]);
+    const { tool } = await setup(fake);
+    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
+    await tool("vast_rent").call(RENT, ctx);
+    expect(cards[0]?.rows.map((r) => r[10])).toEqual(["102", "103"]);
+    expect(cards[0]?.rows[0]?.[7]).toBe("1 d 6 h");
+  });
+
+  test("when every offer ends too soon it says so and books nothing", async () => {
+    const fake = vast([offer(101, 0.5, { end_date: NOW / 1000 + 3600 })]);
+    const { folder, tool } = await setup(fake);
+    const { ctx, cards } = ctxFor([]);
+    await expect(tool("vast_rent").call({ ...RENT, offers: [101] }, ctx)).rejects.toThrow(
+      "before the budget runs out",
+    );
+    expect(cards).toEqual([]);
+    expect(await readLeases(leasesPath(folder))).toEqual([]);
+  });
+
+  test("a fallback row that ends too soon for the confirmed budget is skipped", async () => {
+    // Budget 1 puts all three on the card (2 to 2.5 h of run); confirming 5 makes 102 run 12.5 h, past its end date.
+    const fake = vast(
+      [
+        offer(101, 0.5, { end_date: NOW / 1000 + 100 * 3600 }),
+        offer(102, 0.4, { end_date: NOW / 1000 + 8 * 3600 }),
+        offer(103, 0.6, { end_date: NOW / 1000 + 100 * 3600 }),
+      ],
+      { 101: "gone" },
+    );
+    const { tool } = await setup(fake);
+    const text = await tool("vast_rent").call(
+      { ...RENT, budget: 1, offers: [101, 102, 103] },
+      ctxFor([{ row: 0, amount: 5 }]).ctx,
+    );
+    expect(fake.puts.map((p) => p.url.split("/")[6])).toEqual(["101", "103"]);
+    expect(text).toContain("#9103");
   });
 
   test("with no offer left it asks nothing and books nothing", async () => {

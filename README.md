@@ -283,7 +283,7 @@ tool acts on the calling session's boxes only.
 
 | Tool | What it does |
 |---|---|
-| `vast_offers` | The cheapest rentable GPU machines that pass the filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `limit` default 10), from the public `GET /api/v0/bundles/`. No key. Returns offer ids. |
+| `vast_offers` | The cheapest rentable GPU machines that pass the filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `min_hours`, `limit` default 10), from the public `GET /api/v0/bundles/`. No key. Returns offer ids. |
 | `vast_rent` | `name` (8 characters at most), `budget`, `offers`, `image`, `disk_gb`, `purpose`, optionally `onstart`, `env`, `ports`. Shows the card; books and creates only after the reader's click. |
 | `vast_boxes` | This session's boxes: status, $/h, spent of budget, lease end, ssh. |
 | `vast_logs` | `name`, `tail`: asks Vast.ai for the box's logs (`PUT /api/v0/instances/request_logs/<id>/`), fetches the returned URL, returns the end. |
