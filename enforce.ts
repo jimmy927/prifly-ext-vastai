@@ -2,7 +2,8 @@
  * Carrying out the lease rules (`rules.ts`) once a minute, with each list of boxes.
  *
  * - A session's box that is due — no lease, a lease over by more than the
- *   grace, a cancelled lease, a budget spent — is saved and destroyed: `/root/.lease/save` if
+ *   grace, a cancelled lease, a budget spent, the host's end date less than
+ *   30 minutes away (Vast.ai stops the box then) — is saved and destroyed: `/root/.lease/save` if
  *   the box has one, again after 10 minutes if it fails, then destroyed
  *   whatever happened. Just before destroying, the lease is read again, so an
  *   extension made meanwhile saves the box.
@@ -25,7 +26,9 @@ import { join } from "node:path";
 import { leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import {
+  type BoxFacts,
   GRACE_MS,
+  hostEnd,
   IDLE_MS,
   IdleWatch,
   judge,
@@ -59,7 +62,11 @@ export type Judged = {
 };
 
 /** What the enforcer does to Vast.ai, replaceable so a test destroys nothing. */
-export type EnforceDeps = { destroy: (id: number) => Promise<void> };
+export type EnforceDeps = {
+  destroy: (id: number) => Promise<void>;
+  /** Run a command on a box over ssh; the real one when left out. */
+  onBox?: typeof onBox;
+};
 
 /**
  * Destroy over REST with the account's key, as `guard.sh` does on the box:
@@ -102,6 +109,10 @@ export class Enforcer {
     this.#file = leasesPath(api.folder);
   }
 
+  get #onBox(): typeof onBox {
+    return this.#deps.onBox ?? onBox;
+  }
+
   stop(): void {
     this.#stopped = true;
   }
@@ -126,17 +137,7 @@ export class Enforcer {
       const label = box.label ?? "";
       const lease = leaseOf(leases, box.id, label);
       const spent = spentOf(box, now);
-      const verdict = judge(
-        {
-          id: box.id,
-          label,
-          startedAt: box.start_date === undefined ? null : box.start_date * 1000,
-          spent,
-        },
-        lease,
-        now,
-        mine,
-      );
+      const verdict = judge(factsOf(box, box.id, spent), lease, now, mine);
       const info: Judged = {
         verdict,
         idleMs: this.#idle.observe(box.id, loadOf(box), now),
@@ -280,7 +281,7 @@ export class Enforcer {
     const target = sshTarget(box);
     // A box that is not running cannot be reached to save; there is nothing to wait for.
     if (target === null) return true;
-    const ran = await onBox(
+    const ran = await this.#onBox(
       target,
       this.#config.sshKey,
       "[ -x /root/.lease/save ] || exit 0; timeout 590 /root/.lease/save",
@@ -292,14 +293,8 @@ export class Enforcer {
 
   async #stillDue(box: Instance, id: number): Promise<boolean> {
     const lease = leaseOf(await readLeases(this.#file), id, box.label ?? "");
-    const startedAt = box.start_date === undefined ? null : box.start_date * 1000;
     const now = Date.now();
-    const verdict = judge(
-      { id, label: box.label ?? "", startedAt, spent: spentOf(box, now) },
-      lease,
-      now,
-      this.#mine(),
-    );
+    const verdict = judge(factsOf(box, id, spentOf(box, now)), lease, now, this.#mine());
     return verdict.kind === "due";
   }
 
@@ -324,7 +319,7 @@ export class Enforcer {
       `echo ${Math.floor(until / 1000)} > $d/until.tmp; mv $d/until.tmp $d/until`,
       `if ! kill -0 "$(cat $d/guard.pid 2>/dev/null)" 2>/dev/null; then LEASE_GRACE_SECONDS=${grace} setsid nohup sh $d/guard.sh >>$d/guard.log 2>&1 </dev/null & echo $! > $d/guard.pid; fi`,
     ].join("; ");
-    const ran = await onBox(target, this.#config.sshKey, command, 60_000, script);
+    const ran = await this.#onBox(target, this.#config.sshKey, command, 60_000, script);
     if (ran.code === 0) this.#guarded.set(id, until);
     this.#api.log("guard", {
       instance: id,
@@ -333,6 +328,17 @@ export class Enforcer {
       err: ran.err.trim().slice(-200),
     });
   }
+}
+
+/** What the rules need of a box: its label, start, cost so far and the host's end date. */
+function factsOf(box: Instance, id: number, spent: number | null): BoxFacts {
+  return {
+    id,
+    label: box.label ?? "",
+    startedAt: box.start_date === undefined ? null : box.start_date * 1000,
+    spent,
+    endsAt: hostEnd(box),
+  };
 }
 
 function nameOf(box: Instance): string {

@@ -202,6 +202,10 @@ you confirmed on the rental card.
   - A session's box with no lease is destroyed 5 minutes after it starts.
   - 15 minutes before a lease ends, the reader is told. 15 minutes after it
     ended, the box is saved and destroyed. `vast_cancel` does that at once.
+  - Every rental has a host end date (`end_date`), when Vast.ai stops the
+    box. 30 minutes before it, whatever the lease says, the box is saved
+    while it still runs and destroyed. `vast_extend` never reaches past that
+    point, and `vast_boxes` shows the end date.
   - An idle box inside its lease is only told about: CPU and GPU under 5 %
     and less than 10 MB of traffic for an hour. Traffic is what separates
     idle from downloading.

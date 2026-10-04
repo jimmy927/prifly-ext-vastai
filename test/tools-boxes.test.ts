@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { type Lease, leasesPath, readLeases, updateLeases } from "../leases";
 import { ctxFor, H, LABEL, NOW, setup, vast } from "./fake-vast";
 
-/** This session's box: 2 an hour, started an hour ago, with a lease to an hour from now. */
-async function withBox(budget: number | null) {
+/**
+ * This session's box: 2 an hour, started an hour ago, with a lease to an hour
+ * from now; its host's end date `hostEndsIn` ms from now, when given.
+ */
+async function withBox(budget: number | null, hostEndsIn?: number) {
   const fake = vast([]);
   fake.instances.push(
     {
@@ -14,6 +17,7 @@ async function withBox(budget: number | null) {
       actual_status: "running",
       ssh_host: "ssh1.vast.ai",
       ssh_port: 20001,
+      ...(hostEndsIn === undefined ? {} : { end_date: (NOW + hostEndsIn) / 1000 }),
     },
     { id: 8, label: "jimmy/s-99999999/other", dph_total: 1, start_date: NOW / 1000 },
     { id: 9, label: "anna/s-0123abcd/theirs", dph_total: 1, start_date: NOW / 1000 },
@@ -46,6 +50,18 @@ describe("vast_boxes", () => {
     expect(text).toContain("-p 20001 root@ssh1.vast.ai");
     expect(text).not.toContain("other");
     expect(text).not.toContain("theirs");
+  });
+
+  test("shows the host's end date and the time left, when the box has one", async () => {
+    const { tool } = await withBox(10, 3 * H);
+    expect(await tool("vast_boxes").call({}, ctxFor([]).ctx)).toMatch(
+      /host end date .*\(3h 0m left\)/,
+    );
+  });
+
+  test("a box with no host end date says nothing of one", async () => {
+    const { tool } = await withBox(10);
+    expect(await tool("vast_boxes").call({}, ctxFor([]).ctx)).not.toContain("host end date");
   });
 
   test("a box without a budget says so", async () => {
@@ -138,6 +154,34 @@ describe("vast_extend", () => {
     await tool("vast_extend").call({ name: "job1", hours: 4 }, ctx);
     expect(cards).toEqual([]);
     expect((await only(folder))?.until).toBe(NOW + 5 * H);
+  });
+
+  test("it never reaches past 30 minutes before the host's end date, and says so", async () => {
+    // The lease ends in 1 h, the host stops the box in 3 h: 2.5 h from now is the most.
+    const { tool, folder } = await withBox(null, 3 * H);
+    const text = await tool("vast_extend").call({ name: "job1", hours: 4 }, ctxFor([]).ctx);
+    expect((await only(folder))?.until).toBe(NOW + 2.5 * H);
+    expect(text).toContain("host's end date limits it");
+    expect(text).toContain("(3h 0m left)");
+    expect(text).toContain("Only 1h 30m of the 4 hours fit");
+  });
+
+  test("a lease already at the host's limit is unchanged, and the reader is not asked for money", async () => {
+    // The lease ends in 1 h; the host stops the box in 1 h 30 m, so the limit is in 1 h: no room.
+    const { tool, folder } = await withBox(null, H + 30 * 60_000);
+    const { ctx, cards } = ctxFor([]);
+    const text = await tool("vast_extend").call({ name: "job1", hours: 5 }, ctx);
+    expect(cards).toEqual([]);
+    expect((await only(folder))?.until).toBe(NOW + H);
+    expect(text).toContain("lease is unchanged");
+    expect(text).toContain("host's end date limits it");
+  });
+
+  test("a host end date far away limits nothing", async () => {
+    const { tool, folder } = await withBox(null, 40 * H);
+    const text = await tool("vast_extend").call({ name: "job1", hours: 2 }, ctxFor([]).ctx);
+    expect((await only(folder))?.until).toBe(NOW + 3 * H);
+    expect(text).not.toContain("host's end date");
   });
 
   test("another session's box cannot be extended", async () => {

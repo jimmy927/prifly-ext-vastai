@@ -249,6 +249,85 @@ describe("budget", () => {
   });
 });
 
+describe("the host's end date", () => {
+  /** A running box with an address, its lease long (20 h left), its host's end date `endsIn` ms away. */
+  const hosted = (endsIn: number | null): Instance => ({
+    ...box(1, "jimmy/s-0123abcd/lc-box1", 1),
+    actual_status: "running",
+    ssh_host: "ssh1.vast.ai",
+    ssh_port: 20001,
+    end_date: endsIn === null ? null : (NOW + endsIn) / 1000,
+  });
+
+  async function leased() {
+    const ctx = await host();
+    await updateLeases(leasesPath(ctx.folder), (leases) =>
+      book(leases, "jimmy/s-0123abcd/lc-box1", 21, NOW - H),
+    );
+    return ctx;
+  }
+
+  async function destroyed(notices: { text: string }[]) {
+    for (let i = 0; i < 50 && !notices.some((n) => n.text.startsWith("Destroyed")); i += 1) {
+      await Bun.sleep(20);
+    }
+  }
+
+  test("a box that ends in 20 minutes is saved while running, then destroyed, though its lease runs for hours", async () => {
+    const { api, folder, notices } = await leased();
+    const fake = fakeDestroy();
+    const commands: string[] = [];
+    const deps = {
+      ...fake.deps,
+      onBox: async (_target: unknown, _key: unknown, command: string) => {
+        commands.push(command);
+        return { code: 0, out: "", err: "" };
+      },
+    };
+    const enforcer = new Enforcer(api, config(true), deps);
+    const boxes = [hosted(20 * 60_000)];
+    await enforcer.round(boxes, NOW); // binds the lease
+    const judged = await enforcer.round(boxes, NOW);
+    expect(judged.get(1)?.verdict).toEqual({
+      kind: "due",
+      reason: "the host's end date is near",
+    });
+    await destroyed(notices);
+    expect(commands.some((c) => c.includes("/root/.lease/save"))).toBe(true);
+    expect(fake.calls).toEqual([1]);
+    expect(notices.map((n) => n.text)).toContain(
+      "Destroyed lc-box1 (the host's end date is near); it no longer bills.",
+    );
+    expect(await readLeases(leasesPath(folder))).toEqual([]);
+  });
+
+  test("with enforcement off it only says it would destroy", async () => {
+    const { api, notices } = await leased();
+    const fake = fakeDestroy();
+    await new Enforcer(api, config(false), fake.deps).round([hosted(20 * 60_000)], NOW);
+    await Bun.sleep(50);
+    expect(fake.calls).toEqual([]);
+    expect(notices.map((n) => n.text)).toEqual([
+      "Would destroy lc-box1 (the host's end date is near) — lease enforcement is off, so it is left running.",
+    ]);
+  });
+
+  test("a box that ends in more than 30 minutes is left alone, as is one with no end date", async () => {
+    const { api } = await leased();
+    const fake = fakeDestroy();
+    const enforcer = new Enforcer(api, config(true), {
+      ...fake.deps,
+      onBox: async () => ({ code: 0, out: "", err: "" }),
+    });
+    for (const endsIn of [31 * 60_000, 5 * H, null]) {
+      const judged = await enforcer.round([hosted(endsIn)], NOW);
+      expect(judged.get(1)?.verdict.kind).toBe("leased");
+    }
+    await Bun.sleep(50);
+    expect(fake.calls).toEqual([]);
+  });
+});
+
 test("the enforcer destroys with the key from prifly's vault, before any key file", async () => {
   const seen: { url: string; auth: string }[] = [];
   const get = async (url: string, init: RequestInit) => {
