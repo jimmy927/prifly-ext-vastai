@@ -25,7 +25,7 @@ import {
 import { endsInText, type OfferFilters, searchOffers } from "./offers";
 import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
-import { span } from "./rules";
+import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
 import { budgetEnd, budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
 import {
   boxLabels,
@@ -40,7 +40,7 @@ import {
   sshText,
   type ToolDeps,
 } from "./tool-kit";
-import { requestLogs, withKeys } from "./vast-api";
+import { type Instance, requestLogs, withKeys } from "./vast-api";
 
 export function makeTools(deps: ToolDeps): ExtensionTool[] {
   return [
@@ -131,14 +131,16 @@ function boxLine({ box, id, name }: OwnBox, lease: Lease | null, deps: ToolDeps)
       ? spentLine(spent, lease.budget)
       : `${spent === null ? "?" : dollars(spent)} spent, no budget`;
   const ends = lease === null ? "no lease" : `lease until ${endText(lease.until, now)}`;
+  const hostEnds = hostEnd(box);
+  const host = hostEnds === null ? "" : ` · host end date ${endText(hostEnds, now)}`;
   const ssh = sshText(box, deps.sshKey);
-  return `${name} (#${id}): ${status} · ${dollars(box.dph_total ?? 0)}/h · ${spend} · ${ends}${ssh === null ? "" : ` · ${ssh}`}`;
+  return `${name} (#${id}): ${status} · ${dollars(box.dph_total ?? 0)}/h · ${spend} · ${ends}${host}${ssh === null ? "" : ` · ${ssh}`}`;
 }
 
 function boxesTool(deps: ToolDeps): ExtensionTool {
   return defineTool(
     "vast_boxes",
-    "This session's Vast.ai boxes with status, rate, spent of budget, lease end and ssh command. Boxes of other sessions are not listed.",
+    "This session's Vast.ai boxes with status, rate, spent of budget, lease end, the host's end date (when the box is saved and destroyed 30 minutes before) and ssh command. Boxes of other sessions are not listed.",
     z.strictObject({}),
     async (_args, ctx) => {
       const [boxes, leases] = await Promise.all([
@@ -189,7 +191,7 @@ const ExtendArgs = z.strictObject({
 function extendTool(deps: ToolDeps): ExtensionTool {
   return defineTool(
     "vast_extend",
-    "Add hours to one of this session's boxes' leases. Free while the box's cost to the new end stays within its budget; otherwise the reader is asked, on a card, to raise the budget, and the box is extended as far as the budget they confirm allows. A lease reaches at most 24 hours ahead.",
+    "Add hours to one of this session's boxes' leases. Free while the box's cost to the new end stays within its budget; otherwise the reader is asked, on a card, to raise the budget, and the box is extended as far as the budget they confirm allows. A lease reaches at most 24 hours ahead, and never past 30 minutes before the host's end date, when the box is saved and destroyed.",
     ExtendArgs,
     async (args, ctx) => {
       const box = pickBox(await ownBoxes(deps, ctx.session), args.name);
@@ -200,7 +202,12 @@ function extendTool(deps: ToolDeps): ExtensionTool {
         );
       }
       const now = deps.now();
-      const wanted = Math.max(lease.until, now) + args.hours * HOUR_MS;
+      const from = Math.max(lease.until, now);
+      const hostCap = hostCapOf(box.box);
+      if (hostCap !== null && hostCap <= from) {
+        return await applyExtension(deps, box, lease, args.hours, null);
+      }
+      const wanted = Math.min(from + args.hours * HOUR_MS, hostCap ?? Number.POSITIVE_INFINITY);
       const need = costAt(box.box, wanted);
       if (lease.budget === null || need === null || need <= lease.budget + 1e-9) {
         return await applyExtension(deps, box, lease, args.hours, null);
@@ -216,6 +223,12 @@ function extendTool(deps: ToolDeps): ExtensionTool {
       return await applyExtension(deps, box, lease, args.hours, confirmed);
     },
   );
+}
+
+/** The latest a lease may end for this box: `EXPIRY_MARGIN_MS` before the host's end date; null when it has none. */
+function hostCapOf(box: Instance): number | null {
+  const end = hostEnd(box);
+  return end === null ? null : end - EXPIRY_MARGIN_MS;
 }
 
 type Raise = { box: OwnBox; lease: Lease; hours: number; need: number; wanted: number };
@@ -268,7 +281,12 @@ async function applyExtension(
   const budget = confirmed ?? lease.budget;
   const from = Math.max(lease.until, now);
   const limit = budget === null ? null : budgetEnd(box, budget);
-  const end = Math.min(from + hours * HOUR_MS, limit ?? Number.POSITIVE_INFINITY);
+  const hostCap = hostCapOf(box);
+  const end = Math.min(
+    from + hours * HOUR_MS,
+    limit ?? Number.POSITIVE_INFINITY,
+    hostCap ?? Number.POSITIVE_INFINITY,
+  );
   const allowed = (end - from) / HOUR_MS;
   const target = targetOf(lease);
   const next = await updateLeases(leasesPath(deps.folder), (leases) => {
@@ -280,19 +298,41 @@ async function applyExtension(
   });
   deps.log("extended", { instance: box.id ?? 0, until: next.until, by: "session" });
   deps.refresh();
-  const asked = allowed < hours - 1e-6;
   const cost = budget === null ? "" : `, budget ${budgetText(budget)}`;
-  const spent = spentOf(box, now);
+  const note = limitNote({ box, hours, from, end, hostCap, budgetLimited: budget !== null }, now);
   return [
     allowed > 0
       ? `${name}'s lease now runs until ${endText(next.until, now)}${cost}.`
       : `${name}'s lease is unchanged (until ${endText(next.until, now)})${cost}.`,
-    asked && budget !== null
-      ? `Only ${span(Math.max(0, end - from))} of the ${hours} hours fit the budget${spent === null ? "" : ` (spent ${dollars(spent)})`}.`
-      : "",
+    note,
   ]
     .filter((line) => line !== "")
     .join("\n");
+}
+
+type Limited = {
+  box: Instance;
+  hours: number;
+  from: number;
+  end: number;
+  hostCap: number | null;
+  budgetLimited: boolean;
+};
+
+/** What to tell the reader when fewer hours were added than asked: the host's end date or the budget, whichever held it; "" when all fit. */
+function limitNote(
+  { box, hours, from, end, hostCap, budgetLimited }: Limited,
+  now: number,
+): string {
+  if (end - from >= hours * HOUR_MS - 1) return "";
+  const fit = end > from ? ` Only ${span(end - from)} of the ${hours} hours fit.` : "";
+  const hostEnds = hostEnd(box);
+  if (hostCap !== null && hostEnds !== null && end >= hostCap - 1) {
+    return `The host's end date limits it: ${endText(hostEnds, now)}. Vast.ai stops the box then, so it is saved and destroyed ${span(EXPIRY_MARGIN_MS)} before.${fit}`;
+  }
+  if (!budgetLimited) return "";
+  const spent = spentOf(box, now);
+  return `Only ${span(Math.max(0, end - from))} of the ${hours} hours fit the budget${spent === null ? "" : ` (spent ${dollars(spent)})`}.`;
 }
 
 function cancelTool(deps: ToolDeps): ExtensionTool {

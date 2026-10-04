@@ -30,6 +30,7 @@ describe("parsePage", () => {
       num_gpus: 1,
       actual_status: "exited",
       intended_status: "stopped",
+      end_date: 1790000000,
       dph_total: 0.48518518518518516,
       cpu_util: 12.34625,
       gpu_util: 0,
@@ -39,6 +40,7 @@ describe("parsePage", () => {
       ssh_port: 20001,
     });
     expect(rows[2]?.label).toBeNull();
+    expect(rows.map((row) => row.end_date)).toEqual([1790000000, null, 1790003600.5]);
   });
 
   test("an odd field is dropped, not the box", () => {

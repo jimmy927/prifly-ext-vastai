@@ -57,6 +57,11 @@ export const InstanceSchema = z.object({
   ssh_port: field(z.number()),
   /** Epoch seconds. */
   start_date: field(z.number()),
+  /**
+   * Epoch seconds: the host's end date, fixed from its offer when the box was
+   * rented. Vast.ai stops the box then. Null or missing when there is none.
+   */
+  end_date: field(z.number().nullable()),
   /** Running totals of billed traffic, in KiB: a box downloading is not idle. */
   inet_up_billed: field(z.number().nullable()),
   inet_down_billed: field(z.number().nullable()),

@@ -16,11 +16,16 @@
  * extended, and then the box is saved and destroyed. Idleness inside a lease
  * is only ever warned about: the lease is what the session asked for.
  *
+ * Whatever its lease says, a box whose host end date is less than
+ * `EXPIRY_MARGIN_MS` away is due: Vast.ai stops it then, and a stopped box
+ * cannot be saved.
+ *
  * A lease may carry a dollar budget, the amount the reader confirmed. A box
  * that has cost that much is due at once, whatever its lease says.
  */
 
 import type { Lease } from "./leases";
+import type { Instance } from "./vast-api";
 
 /** `<owner>/s-<session8>/<name>`, the owner left out on the older labels. */
 export const SESSION_LABEL = /^(?:([a-z0-9_-]{1,16})\/)?s-([0-9a-f]{8})\/(.+)$/;
@@ -56,6 +61,11 @@ export type Mine = { owner: string; sessions: readonly string[] };
 export const ENDING_MS = 15 * 60_000;
 /** After a lease ends, the time left to extend it. */
 export const GRACE_MS = 15 * 60_000;
+/**
+ * A box is saved and destroyed this long before the host's end date: Vast.ai
+ * stops it then, and a stopped box cannot be reached to save.
+ */
+export const EXPIRY_MARGIN_MS = 30 * 60_000;
 /** A new box with no lease yet: the time its session has to book one. */
 export const BOOKING_MS = 5 * 60_000;
 /** Below this CPU and GPU, a box is not computing. */
@@ -73,7 +83,15 @@ export type Verdict =
   | { kind: "leased"; leftMs: number }
   | { kind: "ending"; leftMs: number }
   | { kind: "grace"; leftMs: number }
-  | { kind: "due"; reason: "no lease" | "lease over" | "cancelled" | "budget reached" };
+  | {
+      kind: "due";
+      reason:
+        | "no lease"
+        | "lease over"
+        | "cancelled"
+        | "budget reached"
+        | "the host's end date is near";
+    };
 
 /** What the rules need to know of a box; `spent` is what it has cost, in dollars, when known. */
 export type BoxFacts = {
@@ -81,7 +99,15 @@ export type BoxFacts = {
   label: string;
   startedAt: number | null;
   spent?: number | null;
+  /** The host's end date, epoch ms; null or left out when the box has none. */
+  endsAt?: number | null;
 };
+
+/** The host's end date of a box in epoch ms, or null when Vast.ai gave none. */
+export function hostEnd(box: Pick<Instance, "end_date">): number | null {
+  const date = box.end_date;
+  return date === undefined || date === null || date <= 0 ? null : date * 1000;
+}
 
 /** A session's box of this owner: labelled with it, or with the older label that has none. */
 export function isOwnBox(label: string, owner: string): boolean {
@@ -112,6 +138,10 @@ export function judge(box: BoxFacts, lease: Lease | null, now: number, mine: Min
 }
 
 function leaseVerdict(box: BoxFacts, lease: Lease | null, now: number): Verdict {
+  // Whatever the lease says, the host stops the box at its end date.
+  if (box.endsAt != null && box.endsAt - EXPIRY_MARGIN_MS <= now) {
+    return { kind: "due", reason: "the host's end date is near" };
+  }
   if (lease === null) {
     const booking = (box.startedAt ?? now) + BOOKING_MS - now;
     return booking > 0

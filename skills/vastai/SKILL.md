@@ -40,7 +40,8 @@ hour the budget runs out, so the guard enforces the budget too.
 - `vast_rent` books the lease itself, before it creates the box: for the budget's hours, at most 24 hours ahead.
 - `vast_extend <name> <hours>` adds hours while you still need the box; you are warned 15 minutes before the end.
 - `vast_cancel <name>` when the work is done: saved and destroyed within a minute.
-- `vast_boxes` shows each box's lease end and spend.
+- `vast_boxes` shows each box's lease end, spend and the host's end date.
+- **VAI-L4 (KNOW)** Every rental has a host end date, when Vast.ai stops the box. The box is saved and destroyed 30 minutes before it, even with lease left, and `vast_extend` stops there and says so. Results must be off the box by then.
 
 - **VAI-L1 (MUST)** Never rent around `vast_rent`: a box without a lease has 5 minutes before it is destroyed.
 - **VAI-L2 (MUST)** Cancel as soon as the work is done — an idle box inside its lease is only warned about, never destroyed, and bills until the lease or the budget ends.
