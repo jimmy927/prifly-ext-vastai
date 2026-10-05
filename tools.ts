@@ -26,6 +26,7 @@ import {
 import { endsInText, type OfferFilters, searchOffers, shareText, vramText } from "./offers";
 import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
+import { MAX_REPLACEMENTS } from "./replace";
 import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
 import { budgetEnd, budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
 import {
@@ -140,7 +141,12 @@ function boxLine({ box, id, name }: OwnBox, lease: Lease | null, deps: ToolDeps)
   const hostEnds = hostEnd(box);
   const host = hostEnds === null ? "" : ` · host end date ${endText(hostEnds, now)}`;
   const ssh = sshText(box, deps.sshKey);
-  return `${name} (#${id}): ${status} · ${dollars(box.dph_total ?? 0)}/h · ${spend} · ${ends}${host}${ssh === null ? "" : ` · ${ssh}`}`;
+  const replaces = lease?.replace?.replaces;
+  const replaced =
+    replaces == null
+      ? ""
+      : ` · replaces #${replaces.box} — ${replaces.reason} (replacement ${lease?.replace?.count ?? 0} of ${MAX_REPLACEMENTS})`;
+  return `${name} (#${id}): ${status} · ${dollars(box.dph_total ?? 0)}/h · ${spend} · ${ends}${host}${replaced}${ssh === null ? "" : ` · ${ssh}`}`;
 }
 
 function boxesTool(deps: ToolDeps): ExtensionTool {

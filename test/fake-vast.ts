@@ -58,7 +58,15 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     const how = creates[id] ?? "ok";
     if (how === "gone") return Response.json({ success: false, msg: "offer unavailable" });
     if (how === "error") return new Response("bad gateway", { status: 502 });
-    instances.push({ id: 9000 + id, label: body["label"], dph_total: 1, start_date: NOW / 1000 });
+    instances.push({
+      id: 9000 + id,
+      label: body["label"],
+      dph_total: 1,
+      start_date: NOW / 1000,
+      machine_id: offers.find((o) => o.ask_contract_id === id)?.["machine_id"],
+      ssh_host: "ssh9.vast.ai",
+      ssh_port: 10_000 + id,
+    });
     return Response.json({ success: true, new_contract: 9000 + id });
   };
   const user = () =>

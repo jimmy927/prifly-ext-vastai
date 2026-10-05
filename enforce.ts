@@ -10,6 +10,8 @@
  * - A lease about to end, one in its grace, a box not booked yet, a leased
  *   box idle for an hour and a box that has cost 90 % of its budget are told
  *   to the reader, once each.
+ * - A box that turns out broken (ssh refused, a bad-modes log, stuck in
+ *   created) is cancelled and replaced from the rent's own card: `broken.ts`.
  * - Every leased box that is running gets the on-box guard (`guard.sh`) and
  *   its lease's end, so it destroys itself when prifly is not running.
  *
@@ -23,6 +25,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type BrokenDeps, BrokenWatch, LOG_TAIL } from "./broken";
 import {
   type Account,
   burnOf,
@@ -49,7 +52,14 @@ import {
 } from "./rules";
 import { onBox, sshTarget } from "./run";
 import { BUDGET_WARN, budgetText, cappedUntil, dollars, spentLine, spentOf } from "./spend";
-import { destroyInstance, type Fetch, type Instance, readApiKeys, withKeys } from "./vast-api";
+import {
+  destroyInstance,
+  type Fetch,
+  type Instance,
+  readApiKeys,
+  requestLogs,
+  withKeys,
+} from "./vast-api";
 
 export type EnforceConfig = {
   sshKey: string | null;
@@ -74,7 +84,7 @@ export type Judged = {
 };
 
 /** What the enforcer does to Vast.ai, replaceable so a test destroys nothing. */
-export type EnforceDeps = {
+export type EnforceDeps = BrokenDeps & {
   destroy: (id: number) => Promise<void>;
   /** Run a command on a box over ssh; the real one when left out. */
   onBox?: typeof onBox;
@@ -85,11 +95,12 @@ export type EnforceDeps = {
  * prifly's vault entry first, when `vault` is there, then the CLI's key files.
  */
 export function restDeps(vault: ExtensionApi["vault"], get: Fetch = fetch): EnforceDeps {
+  const keys = () => readApiKeys(process.env, homedir(), vault);
   return {
-    destroy: async (id) =>
-      withKeys(await readApiKeys(process.env, homedir(), vault), (key) =>
-        destroyInstance(key, id, get),
-      ),
+    destroy: async (id) => withKeys(await keys(), (key) => destroyInstance(key, id, get)),
+    logs: async (id) => withKeys(await keys(), (key) => requestLogs(key, id, LOG_TAIL, get)),
+    keys,
+    get,
   };
 }
 
@@ -115,6 +126,8 @@ export class Enforcer {
   readonly #guarded = new Map<number, number>();
   /** Boxes whose guard is being written now: ssh to a box can take a while. */
   readonly #guarding = new Set<number>();
+  /** Broken boxes: found and replaced from the card the reader confirmed. */
+  readonly #broken: BrokenWatch;
   #stopped = false;
   /** The credit at the last round, to see a top-up. */
   #lastCredit: number | null = null;
@@ -124,6 +137,15 @@ export class Enforcer {
     this.#config = config;
     this.#deps = deps;
     this.#file = leasesPath(api.folder);
+    this.#broken = new BrokenWatch({
+      api,
+      enforce: config.enforce,
+      sshKey: config.sshKey,
+      deps,
+      onBox: (...args) => this.#onBox(...args),
+      tell: (key, text, tone, session) => this.#tell(key, text, tone, session),
+      file: this.#file,
+    });
   }
 
   get #credit(): CreditConfig {
@@ -138,6 +160,11 @@ export class Enforcer {
     this.#stopped = true;
   }
 
+  /** Wait for the probes and replacements the last rounds started. */
+  settled(): Promise<void> {
+    return this.#broken.settled();
+  }
+
   /** Judge every box, act on what is due, and hand back what the chips show. */
   async round(boxes: readonly Instance[], now: number): Promise<Map<number, Judged>> {
     const known = boxes.flatMap((box) =>
@@ -150,7 +177,9 @@ export class Enforcer {
         return { leases: next, result: next };
       });
     }
-    this.#idle.keep(new Set(known.map((box) => box.id)));
+    const live = new Set(known.map((box) => box.id));
+    this.#idle.keep(live);
+    this.#broken.keep(live);
     const mine = this.#mine();
     const judged = new Map<number, Judged>();
     for (const box of boxes) {
@@ -168,6 +197,7 @@ export class Enforcer {
       };
       judged.set(box.id, info);
       await this.#act(box, box.id, info);
+      this.#broken.watch(box, lease, verdict, now);
     }
     return judged;
   }

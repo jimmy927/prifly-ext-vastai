@@ -31,6 +31,7 @@ describe("book", () => {
       until: NOW + 2 * H,
       cancelled: false,
       budget: null,
+      replace: null,
     });
     expect(leases).toEqual([result]);
   });
@@ -85,6 +86,7 @@ describe("extend", () => {
       until: NOW + H,
       cancelled: false,
       budget: null,
+      replace: null,
     });
   });
 

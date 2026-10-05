@@ -15,7 +15,15 @@
 
 import { z } from "zod";
 import { ACK_TEXT, runwayHours } from "./credit";
-import { book, dropBooking, leasesPath, MAX_AHEAD_MS, updateLeases } from "./leases";
+import {
+  book,
+  dropBooking,
+  leasesPath,
+  MAX_AHEAD_MS,
+  type Replace,
+  setReplace,
+  updateLeases,
+} from "./leases";
 import { endsTooSoon, fetchOffer, type Offer, shareText, timeLeft, vramText } from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { sessionLabel } from "./rules";
@@ -35,7 +43,7 @@ import {
   sshText,
   type ToolDeps,
 } from "./tool-kit";
-import { createInstance, listInstances, OfferGone, withKeys } from "./vast-api";
+import { type CreateRequest, createInstance, listInstances, OfferGone, withKeys } from "./vast-api";
 
 const PORT = /^\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/;
 
@@ -83,7 +91,7 @@ const RentArgs = z.strictObject({
 type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
+  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
 
 export function rentTool(deps: ToolDeps): ExtensionTool {
   return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
@@ -114,7 +122,7 @@ const COLUMNS = [
 ];
 
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
-function runHours(offer: Offer, budget: number): number {
+export function runHours(offer: Offer, budget: number): number {
   return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
 }
 
@@ -249,6 +257,7 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
       const box = await tryOffer(deps, attempt, offer, index === 0, failures);
       if (box !== null) {
         created = true;
+        await keepReplacements(deps, attempt, { offer, index, box });
         return await describe(deps, attempt, offer, box);
       }
     }
@@ -261,8 +270,37 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
   );
 }
 
+/**
+ * Keep with the new box's lease what replaces it if it turns out broken: the
+ * rest of the card, what the box was created with, and the budget the reader
+ * confirmed. `enforce.ts` rents the replacement from it, with no new card.
+ */
+async function keepReplacements(
+  deps: ToolDeps,
+  { label, budget, order }: Attempt,
+  {
+    offer,
+    index,
+    box,
+  }: { offer: Offer; index: number; box: { id: number; request: CreateRequest } },
+): Promise<void> {
+  const replace: Replace = {
+    offers: order.slice(index + 1).map((o) => o.ask_contract_id),
+    excluded: [],
+    confirmed: budget,
+    spent: 0,
+    count: 0,
+    request: box.request,
+    machine: offer.machine_id ?? null,
+    replaces: null,
+  };
+  await updateLeases(leasesPath(deps.folder), (leases) =>
+    setReplace(leases, { box: box.id, label }, replace),
+  );
+}
+
 /** Why the offer cannot be rented for the confirmed budget, or null when it can. */
-function refusalOf(offer: Offer, budget: number, hours: number, now: number): string | null {
+export function refusalOf(offer: Offer, budget: number, hours: number, now: number): string | null {
   const id = offer.ask_contract_id;
   if (offer.dph_total > budget) {
     return `offer ${id} costs ${rateCell(offer.dph_total)} per hour, more than the confirmed budget`;
@@ -280,7 +318,7 @@ async function tryOffer(
   offer: Offer,
   chosen: boolean,
   failures: string[],
-): Promise<{ id: number; until: number } | null> {
+): Promise<{ id: number; until: number; request: CreateRequest } | null> {
   const id = offer.ask_contract_id;
   const fresh = await fetchOffer(id, args.disk_gb, deps.get);
   if (fresh === null) {
@@ -313,7 +351,7 @@ async function tryOffer(
       createInstance(key, id, request, deps.get),
     );
     deps.log("rented", { offer: id, instance: box, label, budget });
-    return { id: box, until };
+    return { id: box, until, request };
   } catch (caught) {
     if (caught instanceof OfferGone) {
       failures.push(caught.message);
@@ -324,7 +362,7 @@ async function tryOffer(
     const existing = (await listInstances(await deps.keys(), deps.get)).find(
       (box) => box.label === label,
     );
-    if (existing?.id !== undefined) return { id: existing.id, until };
+    if (existing?.id !== undefined) return { id: existing.id, until, request };
     failures.push(message);
     return null;
   }

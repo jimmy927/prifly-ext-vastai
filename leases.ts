@@ -18,6 +18,36 @@ import { mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
+/**
+ * What replacing a broken box needs, kept with its lease: the rest of the
+ * card the reader confirmed, so no new card is asked for.
+ */
+export const ReplaceSchema = z.object({
+  /** The card's offer ids still to try, best first. */
+  offers: z.array(z.number()),
+  /** Machines that gave a broken box in this rent: never rented again. */
+  excluded: z.array(z.number()),
+  /** Dollars the reader confirmed for the whole rent, all its boxes together. */
+  confirmed: z.number(),
+  /** Dollars the boxes before this one cost. */
+  spent: z.number(),
+  /** Replacements made so far. */
+  count: z.number(),
+  /** What every box of this rent is created with. */
+  request: z.object({
+    image: z.string(),
+    disk: z.number(),
+    label: z.string(),
+    onstart: z.string(),
+    env: z.record(z.string(), z.string()),
+  }),
+  /** The machine this box runs on, when the offer said. */
+  machine: z.number().nullable(),
+  /** The broken box this one replaces, and why. */
+  replaces: z.object({ box: z.number(), reason: z.string() }).nullable(),
+});
+export type Replace = z.infer<typeof ReplaceSchema>;
+
 export const LeaseSchema = z.object({
   /** `<owner>/s-<session8>/<name>` (or the older `s-<session8>/<name>`), as the box is (or will be) labelled. */
   label: z.string(),
@@ -31,6 +61,8 @@ export const LeaseSchema = z.object({
   cancelled: z.boolean(),
   /** Dollars the reader confirmed for this rental: the box is saved and destroyed when it has cost this much. Null: none. */
   budget: z.number().nullable().default(null),
+  /** What replaces this box if it turns out broken; none (null or missing) on a box rented before replacements, or adopted. */
+  replace: ReplaceSchema.nullable().optional(),
 });
 export type Lease = z.infer<typeof LeaseSchema>;
 
@@ -143,6 +175,7 @@ export function book(
   hours: number,
   now: number,
   budget: number | null = null,
+  replace: Replace | null = null,
 ): { leases: Lease[]; result: Lease } {
   const lease: Lease = {
     label,
@@ -151,6 +184,7 @@ export function book(
     until: capped(now + hoursOf(hours), now),
     cancelled: false,
     budget,
+    replace,
   };
   const others = leases.filter((l) => !(l.box === null && l.label === label));
   return { leases: [...others, lease], result: lease };
@@ -172,7 +206,12 @@ export function extend(
   if (found === null && adopt === undefined) throw new Error("No lease for that box");
   const from = found === null ? now : Math.max(found.until, now);
   const lease: Lease = {
-    ...(found ?? { ...(adopt ?? { box: null, label: "" }), bookedAt: now, budget: null }),
+    ...(found ?? {
+      ...(adopt ?? { box: null, label: "" }),
+      bookedAt: now,
+      budget: null,
+      replace: null,
+    }),
     until: capped(from + hoursOf(hours), now),
     cancelled: false,
   };
@@ -194,6 +233,17 @@ export function raiseBudget(
   if (found === null) throw new Error("No lease for that box");
   const lease = { ...found, budget: dollars };
   return { leases: [...leases.filter((l) => l !== found), lease], result: lease };
+}
+
+/** Keep `replace` with the lease of a box just created: the one bound to it, else the booking for its label. */
+export function setReplace(
+  leases: readonly Lease[],
+  match: { box: number; label: string },
+  replace: Replace,
+): { leases: Lease[]; result: null } {
+  const found = leaseOf(leases, match.box, match.label);
+  if (found === null) return { leases: [...leases], result: null };
+  return { leases: leases.map((l) => (l === found ? { ...l, replace } : l)), result: null };
 }
 
 /** Drop a booking nothing was rented for. */

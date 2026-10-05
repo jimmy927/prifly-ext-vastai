@@ -45,6 +45,8 @@ export const text = z.string().trim();
 export const InstanceSchema = z.object({
   id: field(z.number()),
   label: field(text.nullable()),
+  /** The host machine: a broken box's machine is not rented again. */
+  machine_id: field(z.number()),
   gpu_name: field(text),
   num_gpus: field(z.number()),
   actual_status: field(text.nullable()),
