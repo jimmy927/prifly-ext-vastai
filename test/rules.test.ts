@@ -168,9 +168,12 @@ describe("IdleWatch", () => {
     expect(watch.observe(1, dropout, NOW)).toBe(0);
     expect(watch.observe(1, quiet, NOW + M)).toBe(0);
     expect(watch.observe(1, dropout, NOW + 5 * M)).toBe(4 * M);
-    // Even a busy CPU on a dropout resets nothing.
-    expect(watch.observe(1, { ...dropout, coresBusy: 50 }, NOW + 6 * M)).toBe(5 * M);
-    expect(watch.observe(1, quiet, NOW + 10 * M)).toBe(9 * M);
+    // The CPU is still valid on a dropout: busy cores end the stretch.
+    expect(watch.observe(1, { ...dropout, coresBusy: 50 }, NOW + 6 * M)).toBe(0);
+    expect(watch.observe(1, quiet, NOW + 7 * M)).toBe(1 * M);
+    // So is the traffic: a download past IDLE_NET_KIB ends it too.
+    expect(watch.observe(1, { ...dropout, netKiB: IDLE_NET_KIB + 1 }, NOW + 8 * M)).toBe(0);
+    expect(watch.observe(1, { ...quiet, netKiB: IDLE_NET_KIB + 1 }, NOW + 9 * M)).toBe(M);
   });
 
   test("forgets boxes that are gone", () => {

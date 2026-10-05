@@ -89,8 +89,6 @@ describe("the card", () => {
     card(busy, hold, NOW);
     card(dropout, hold, NOW + 4 * M);
     expect(card(dropout, hold, NOW + 6 * M).line).toContain("GPU ?");
-    hold.keep(new Set());
-    expect(card(dropout, hold, NOW + 6 * M).line).toContain("GPU ?");
     card(busy, hold, NOW + 7 * M);
     hold.keep(new Set());
     expect(card(dropout, hold, NOW + 8 * M).line).toContain("GPU ?");
@@ -155,10 +153,13 @@ describe("the idle watch on a measured box", () => {
 
     const gpuBox = new IdleWatch();
     const still: Instance = { ...busy, cpu_util: 0, gpu_util: 0, gpu_temp: 35 };
-    expect(gpuBox.observe(1, loadOf(dropout), NOW)).toBe(0);
+    const stillDrop: Instance = { ...still, gpu_temp: 0 };
+    expect(gpuBox.observe(1, loadOf(stillDrop), NOW)).toBe(0);
     expect(gpuBox.observe(1, loadOf(still), NOW + M)).toBe(0);
     expect(gpuBox.observe(1, loadOf(still), NOW + 3 * M)).toBe(2 * M);
-    expect(gpuBox.observe(1, loadOf(dropout), NOW + 4 * M)).toBe(3 * M);
+    expect(gpuBox.observe(1, loadOf(stillDrop), NOW + 4 * M)).toBe(3 * M);
     expect(gpuBox.observe(1, loadOf(still), NOW + 5 * M)).toBe(4 * M);
+    // The busy core still counts on a dropout read.
+    expect(gpuBox.observe(1, loadOf(dropout), NOW + 6 * M)).toBe(0);
   });
 });

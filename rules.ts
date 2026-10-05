@@ -173,7 +173,7 @@ function leaseVerdict(box: BoxFacts, lease: Lease | null, now: number): Verdict 
 export type Load = { coresBusy: number | null; gpu: GpuReading; netKiB: number | null };
 
 /**
- * How long each box has been quiet: CPU and GPU below `IDLE_PCT`, and no more
+ * How long each box has been quiet: fewer than `IDLE_CORES` cores busy, GPU below `IDLE_PCT`, and no more
  * than `IDLE_NET_KIB` of traffic since the quiet began. Low CPU alone is not
  * idle — a box downloading a dataset or waiting on its disk shows 0 % too, and
  * the traffic is what tells them apart. Kept in memory: after a restart the
@@ -185,13 +185,22 @@ export class IdleWatch {
   /** Record a reading; how long the box has now been quiet, in ms. */
   observe(box: number, load: Load, now: number): number {
     const known = this.#quiet.get(box);
-    // A dropped GPU sample reads as zeros, which would look quiet: it says
-    // nothing, so it neither starts a stretch of idleness nor breaks one.
-    if (load.gpu === "unknown") return known === undefined ? 0 : now - known.since;
     const net = load.netKiB ?? 0;
+    // The CPU and the traffic are valid on a read whose GPU sample dropped out:
+    // a busy CPU or a download still ends a stretch of idleness.
+    const busy =
+      (load.coresBusy ?? 0) >= IDLE_CORES ||
+      (known !== undefined && net - known.netAt > IDLE_NET_KIB) ||
+      (typeof load.gpu === "number" && load.gpu >= IDLE_PCT);
+    if (busy) {
+      this.#quiet.set(box, { since: now, netAt: net });
+      return 0;
+    }
+    // A dropped GPU sample reads as zeros, which would look quiet: it says
+    // nothing, so it neither starts a stretch of idleness nor extends one.
+    if (load.gpu === "unknown") return known === undefined ? 0 : now - known.since;
     // No GPU (null) is quiet for the GPU, as is an unknown CPU reading.
-    const quiet = (load.coresBusy ?? 0) < IDLE_CORES && (load.gpu ?? 0) < IDLE_PCT;
-    if (!quiet || known === undefined || net - known.netAt > IDLE_NET_KIB) {
+    if (known === undefined) {
       this.#quiet.set(box, { since: now, netAt: net });
       return 0;
     }
