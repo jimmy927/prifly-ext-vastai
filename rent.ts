@@ -85,6 +85,20 @@ type RentArgs = z.infer<typeof RentArgs>;
 const DESCRIPTION =
   "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
 
+/**
+ * Run first in every box's onstart so sshd's "bad ownership or modes" check can
+ * never lock us out (VAI-35). Errors are dropped and `|| true` keeps `set -e`
+ * from ending the script. No `pkill`/HUP: it kills sshd on images that run it
+ * in the foreground (VAI-38).
+ */
+export const SSH_KEY_REPAIR =
+  '{ chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
+
+/** The repair, then the caller's onstart (or `sleep infinity`, which keeps the box up). */
+export function withSshRepair(onstart?: string): string {
+  return `${SSH_KEY_REPAIR}\n${onstart ?? "sleep infinity"}`;
+}
+
 export function rentTool(deps: ToolDeps): ExtensionTool {
   return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
 }
@@ -302,7 +316,7 @@ async function tryOffer(
     image: args.image,
     disk: args.disk_gb,
     label,
-    onstart: args.onstart ?? "sleep infinity",
+    onstart: withSshRepair(args.onstart),
     env: {
       ...(args.env ?? {}),
       ...Object.fromEntries((args.ports ?? []).map((port) => [`-p ${port}`, "1"])),

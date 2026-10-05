@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { leasesPath, readLeases } from "../leases";
+import { SSH_KEY_REPAIR, withSshRepair } from "../rent";
 import { ctxFor, H, LABEL, NOW, offer, setup, vast } from "./fake-vast";
+
+/** The onstart of the first create request. */
+const sent = (fake: ReturnType<typeof vast>) =>
+  String(((fake.puts[0]?.body ?? {}) as { onstart?: string }).onstart);
 
 const RENT = {
   name: "job1",
@@ -173,8 +181,9 @@ describe("vast_rent", () => {
       cancel_unavail: true,
       image: "ubuntu:22.04",
       disk: 40,
-      onstart: "sleep infinity",
     });
+    expect(sent(fake)).toBe(`${SSH_KEY_REPAIR}\nsleep infinity`);
+    expect(sent(fake)).not.toMatch(/pkill|HUP/);
     expect(text).toContain("#9101");
     expect(text).toContain(LABEL);
     expect(text).toContain("$0.50/h");
@@ -197,9 +206,38 @@ describe("vast_rent", () => {
     );
     expect(fake.puts[0]?.body).toMatchObject({
       env: { A: "b", "-p 8080:8080/tcp": "1" },
-      onstart: "echo hi",
     });
+    const onstart = sent(fake);
+    expect(onstart).toBe(`${SSH_KEY_REPAIR}\necho hi`);
+    expect(onstart).not.toMatch(/pkill|HUP/);
   });
+});
+
+describe("withSshRepair", () => {
+  test("the repair comes first and no onstart can make it signal sshd", () => {
+    for (const onstart of [undefined, "echo hi", "a\nb"]) {
+      const out = withSshRepair(onstart);
+      expect(out.startsWith(`${SSH_KEY_REPAIR}\n`)).toBe(true);
+      expect(out.endsWith(`\n${onstart ?? "sleep infinity"}`)).toBe(true);
+      expect(out).not.toMatch(/pkill|HUP/);
+    }
+  });
+
+  const bash = Bun.which("bash");
+  test.skipIf(!bash)(
+    "the repair cannot stop the caller's onstart, even under bash -e",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "onstart-"));
+      const proc = Bun.spawn([bash as string, "-e", "-c", withSshRepair("echo tail-ran")], {
+        env: { ...process.env, HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const out = await new Response(proc.stdout).text();
+      expect(await proc.exited).toBe(0);
+      expect(out).toContain("tail-ran");
+    },
+  );
 });
 
 describe("vast_rent card", () => {
