@@ -25,6 +25,7 @@
  */
 
 import type { Lease } from "./leases";
+import type { GpuReading } from "./load";
 import type { Instance } from "./vast-api";
 
 /** `<owner>/s-<session8>/<name>`, the owner left out on the older labels. */
@@ -68,8 +69,14 @@ export const GRACE_MS = 15 * 60_000;
 export const EXPIRY_MARGIN_MS = 30 * 60_000;
 /** A new box with no lease yet: the time its session has to book one. */
 export const BOOKING_MS = 5 * 60_000;
-/** Below this CPU and GPU, a box is not computing. */
+/** Below this GPU %, a box is not computing. */
 export const IDLE_PCT = 5;
+/**
+ * Fewer cores than this busy, a box is not computing. Cores, not a % of the
+ * host: a job on a few cores of a 384-core host is under 1 % of it (measured
+ * 2026-10-05: one busy core read cpu_util 0.2604).
+ */
+export const IDLE_CORES = 0.5;
 /** Traffic that makes a box busy: a download or an upload, in Vast.ai's billed KiB. */
 export const IDLE_NET_KIB = 10 * 1024;
 /** Quiet for this long in a row, a box is idle. */
@@ -159,8 +166,11 @@ function leaseVerdict(box: BoxFacts, lease: Lease | null, now: number): Verdict 
   return grace > 0 ? { kind: "grace", leftMs: grace } : { kind: "due", reason: "lease over" };
 }
 
-/** One reading of a box's load: CPU and GPU in %, traffic as Vast.ai's running billed total. */
-export type Load = { cpu: number | null; gpu: number | null; netKiB: number | null };
+/**
+ * One reading of a box's load: cores busy, GPU in % (see `readLoad`), traffic
+ * as Vast.ai's running billed total.
+ */
+export type Load = { coresBusy: number | null; gpu: GpuReading; netKiB: number | null };
 
 /**
  * How long each box has been quiet: CPU and GPU below `IDLE_PCT`, and no more
@@ -174,9 +184,13 @@ export class IdleWatch {
 
   /** Record a reading; how long the box has now been quiet, in ms. */
   observe(box: number, load: Load, now: number): number {
-    const net = load.netKiB ?? 0;
-    const quiet = (load.cpu ?? 0) < IDLE_PCT && (load.gpu ?? 0) < IDLE_PCT;
     const known = this.#quiet.get(box);
+    // A dropped GPU sample reads as zeros, which would look quiet: it says
+    // nothing, so it neither starts a stretch of idleness nor breaks one.
+    if (load.gpu === "unknown") return known === undefined ? 0 : now - known.since;
+    const net = load.netKiB ?? 0;
+    // No GPU (null) is quiet for the GPU, as is an unknown CPU reading.
+    const quiet = (load.coresBusy ?? 0) < IDLE_CORES && (load.gpu ?? 0) < IDLE_PCT;
     if (!quiet || known === undefined || net - known.netAt > IDLE_NET_KIB) {
       this.#quiet.set(box, { since: now, netAt: net });
       return 0;

@@ -35,6 +35,7 @@ describe("parsePage", () => {
       dph_total: 0.48518518518518516,
       cpu_util: 12.34625,
       gpu_util: 0,
+      cpu_cores: 8,
       mem_usage: 1.6829644799999999,
       mem_limit: 30.670848,
       ssh_host: "ssh1.vast.ai",
@@ -42,6 +43,17 @@ describe("parsePage", () => {
     });
     expect(rows[2]?.label).toBeNull();
     expect(rows.map((row) => row.end_date)).toEqual([1790000000, null, 1790003600.5]);
+  });
+
+  test("reads the GPU temperature, video memory and core counts", () => {
+    const { rows } = parsePage({
+      instances: [
+        { id: 1, gpu_temp: 72, vmem_usage: 76.9, cpu_cores: 384, cpu_cores_effective: 384.0 },
+      ],
+    });
+    expect(rows).toEqual([
+      { id: 1, gpu_temp: 72, vmem_usage: 76.9, cpu_cores: 384, cpu_cores_effective: 384 },
+    ]);
   });
 
   test("an odd field is dropped, not the box", () => {

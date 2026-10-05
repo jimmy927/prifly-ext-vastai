@@ -36,6 +36,7 @@ import { join } from "node:path";
 import { CREDIT_DEFAULTS, type CreditConfig } from "./credit";
 import { Enforcer, type Judged } from "./enforce";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
+import { cardLoad, GpuHold } from "./load";
 import {
   boxActions,
   type CreditView,
@@ -45,7 +46,7 @@ import {
   statusOf,
 } from "./machine-card";
 import { readOwner } from "./owner";
-import type { Decoration, DecorationTone, ExtensionApi, ExtensionMachine } from "./prifly-api";
+import type { Decoration, ExtensionApi, ExtensionMachine } from "./prifly-api";
 import { parseLabel } from "./rules";
 import { sshCommand, sshTarget } from "./run";
 import { makeTools } from "./tools";
@@ -71,15 +72,14 @@ type Config = {
   credit: CreditConfig;
 };
 
-const IDLE_PCT = 20;
-const BUSY_PCT = 80;
-
 export async function activate(api: ExtensionApi): Promise<() => void> {
   const config = await readConfig(api.folder);
   // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
   const keys = () => readApiKeys(process.env, homedir(), api.vault);
   const enforcer = new Enforcer(api, config);
   const labels = new Map<number, string>();
+  // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
+  const gpuHold = new GpuHold();
   let stopped = false;
   let busy = false;
   // The credit is read with the boxes; a failure is logged and the boxes still show.
@@ -115,7 +115,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
       const credit = await readCredit(boxes, leases, now);
       if (!stopped) {
         remember(labels, boxes);
-        show(api, boxes, judged, config);
+        show(api, boxes, judged, config, gpuHold, now);
         // Absent on a prifly older than "machines": the boxes still show.
         const waiting = leases.filter((l) => l.box === null);
         api.machines?.report(machinesOf(boxes, config, judged, waiting, credit));
@@ -216,13 +216,16 @@ function show(
   boxes: readonly Instance[],
   judged: ReadonlyMap<number, Judged>,
   config: Config,
+  hold: GpuHold,
+  now: number,
 ): void {
   const bySession: Record<string, Decoration[]> = {};
   const unclaimed: Decoration[] = [];
+  hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
     const { session, name } = ownerOf(box, config.owner);
     const lease = box.id === undefined ? undefined : judged.get(box.id);
-    const item = decoration(box, name, session, lease, config);
+    const item = decoration(box, name, session, lease, config, hold, now);
     if (session === null) unclaimed.push(item);
     else bySession[session] = [...(bySession[session] ?? []), item];
   }
@@ -251,12 +254,15 @@ function decoration(
   session: string | null,
   lease: Judged | undefined,
   config: Config,
+  hold: GpuHold,
+  now: number,
 ): Decoration {
   const status = box.actual_status ?? box.intended_status ?? "?";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   const running = status === "running";
   const target = sshTarget(box);
-  const loadTone = running ? load(percent(box.cpu_util), percent(box.gpu_util)) : "critical";
+  const load = cardLoad(box, hold, now);
+  const loadTone = running ? load.tone : "critical";
   const leased = lease === undefined ? null : leaseLine(lease, config.enforce);
   const unclaimed = session === null && lease?.verdict.kind !== "foreign";
   return {
@@ -264,7 +270,10 @@ function decoration(
     icon: running ? "server" : "alert",
     label: `${unclaimed ? "? " : ""}${name} ${running ? rate : status}${leased === null ? "" : ` · ${leased.short}`}`,
     tone: leased?.tone ?? loadTone,
-    details: [...details(box, status, rate, unclaimed), ...(leased === null ? [] : leased.details)],
+    details: [
+      ...details(box, status, rate, unclaimed, load.line),
+      ...(leased === null ? [] : leased.details),
+    ],
     actions: boxActions(box.id ?? "?", name, rate, lease),
     // A click on the box opens ssh to it in a terminal window of prifly's own.
     ...(target === null
@@ -279,15 +288,18 @@ function decoration(
 }
 
 /** The hover lines of a box. */
-function details(box: Instance, status: string, rate: string, unclaimed: boolean): string[] {
+function details(
+  box: Instance,
+  status: string,
+  rate: string,
+  unclaimed: boolean,
+  loadLine: string,
+): string[] {
   const running = status === "running";
-  const gpus = (box.num_gpus ?? 0) > 1 ? ` ×${box.num_gpus}` : "";
-  const cpu = show0(percent(box.cpu_util));
-  const gpu = show0(percent(box.gpu_util));
   return [
     `Vast.ai #${box.id ?? "?"} · label ${box.label || "(none)"}`,
     `${status} · ${rate}${running ? "" : " — a stopped box still bills disk"}`,
-    running ? `CPU ${cpu} · GPU ${gpu}${gpus} (${box.gpu_name ?? "?"})` : "",
+    running ? loadLine : "",
     running ? `Memory ${memory(box)}` : "",
     box.ssh_host === undefined ? "" : `ssh -p ${box.ssh_port} root@${box.ssh_host}`,
     unclaimed
@@ -355,23 +367,6 @@ function machineOf(
         ? []
         : [{ name: "gpu", state: "present", version: gpu, detail: `${box.num_gpus ?? 1}x` }],
   };
-}
-
-function percent(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : null;
-}
-
-function show0(value: number | null): string {
-  return value === null ? "?" : `${value} %`;
-}
-
-/** A rented box is paid to work: idle red, busy green, amber between. */
-function load(cpu: number | null, gpu: number | null): DecorationTone {
-  const readings = [cpu, gpu].filter((value): value is number => value !== null);
-  if (readings.length === 0) return "muted";
-  const peak = Math.max(...readings);
-  if (peak < IDLE_PCT) return "critical";
-  return peak >= BUSY_PCT ? "good" : "warning";
 }
 
 function memory(box: Instance): string {

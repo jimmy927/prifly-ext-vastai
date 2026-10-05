@@ -32,6 +32,7 @@ import {
   runwayHours,
 } from "./credit";
 import { type Lease, leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
+import { readLoad } from "./load";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import {
   type BoxFacts,
@@ -40,6 +41,7 @@ import {
   IDLE_MS,
   IdleWatch,
   judge,
+  type Load,
   type Mine,
   parseLabel,
   span,
@@ -461,12 +463,13 @@ function nameOf(box: Instance): string {
   return parseLabel(box.label ?? "")?.name ?? `#${box.id ?? "?"}`;
 }
 
-function loadOf(box: Instance) {
+export function loadOf(box: Instance): Load {
+  const { coresBusy, gpu } = readLoad(box);
   const up = box.inet_up_billed ?? null;
   const down = box.inet_down_billed ?? null;
   return {
-    cpu: box.cpu_util ?? null,
-    gpu: box.gpu_util ?? null,
+    coresBusy,
+    gpu,
     netKiB: up === null && down === null ? null : (up ?? 0) + (down ?? 0),
   };
 }

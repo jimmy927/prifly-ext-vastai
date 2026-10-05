@@ -54,6 +54,12 @@ export const InstanceSchema = z.object({
   storage_total_cost: field(z.number()),
   cpu_util: field(z.number().nullable()),
   gpu_util: field(z.number().nullable()),
+  /** 0 or none on a box with GPUs means the list had no GPU sample: see load.ts. */
+  gpu_temp: field(z.number().nullable()),
+  vmem_usage: field(z.number().nullable()),
+  /** `cpu_util` is a share of all these cores: see load.ts. */
+  cpu_cores: field(z.number().nullable()),
+  cpu_cores_effective: field(z.number().nullable()),
   mem_usage: field(z.number().nullable()),
   mem_limit: field(z.number().nullable()),
   ssh_host: field(text),

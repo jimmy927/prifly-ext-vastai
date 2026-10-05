@@ -3,6 +3,7 @@ import type { Lease } from "../leases";
 import {
   BOOKING_MS,
   GRACE_MS,
+  IDLE_CORES,
   IDLE_NET_KIB,
   IdleWatch,
   isOwnBox,
@@ -125,12 +126,12 @@ describe("judge: whose box", () => {
 });
 
 describe("IdleWatch", () => {
-  test("low CPU and GPU with no traffic adds up; traffic or load starts it again", () => {
+  test("few busy cores and a quiet GPU with no traffic adds up; traffic or load starts it again", () => {
     const watch = new IdleWatch();
-    const quiet = { cpu: 0.1, gpu: 0, netKiB: 1000 };
+    const quiet = { coresBusy: 0.1, gpu: 0, netKiB: 1000 };
     expect(watch.observe(1, quiet, NOW)).toBe(0);
     expect(watch.observe(1, quiet, NOW + 30 * M)).toBe(30 * M);
-    // Downloading a dataset: 0 % CPU, but the traffic grows.
+    // Downloading a dataset: 0 cores busy, but the traffic grows.
     expect(watch.observe(1, { ...quiet, netKiB: 1000 + IDLE_NET_KIB + 1 }, NOW + 31 * M)).toBe(0);
     expect(watch.observe(1, { ...quiet, netKiB: 1000 + IDLE_NET_KIB + 1 }, NOW + 40 * M)).toBe(
       9 * M,
@@ -138,11 +139,45 @@ describe("IdleWatch", () => {
     expect(watch.observe(1, { ...quiet, gpu: 90 }, NOW + 41 * M)).toBe(0);
   });
 
+  test("a CPU-only box (no GPU) is quiet for the GPU", () => {
+    const watch = new IdleWatch();
+    const quiet = { coresBusy: 0, gpu: null, netKiB: 0 };
+    watch.observe(1, quiet, NOW);
+    expect(watch.observe(1, quiet, NOW + 10 * M)).toBe(10 * M);
+  });
+
+  test("one busy core of a big host is not idle", () => {
+    const watch = new IdleWatch();
+    // cpu_util 0.2604 of 384 cores: the % is far below IDLE_PCT, the core is not.
+    const busy = { coresBusy: (0.2604 / 100) * 384, gpu: null, netKiB: 0 };
+    watch.observe(1, { ...busy, coresBusy: 0.1 }, NOW);
+    expect(watch.observe(1, busy, NOW + 10 * M)).toBe(0);
+    expect(watch.observe(1, busy, NOW + 20 * M)).toBe(0);
+    // 0.4 cores is still quiet; 0.5 is not.
+    const watch2 = new IdleWatch();
+    watch2.observe(2, { ...busy, coresBusy: IDLE_CORES - 0.1 }, NOW);
+    expect(watch2.observe(2, { ...busy, coresBusy: IDLE_CORES - 0.1 }, NOW + M)).toBe(M);
+    expect(watch2.observe(2, { ...busy, coresBusy: IDLE_CORES }, NOW + 2 * M)).toBe(0);
+  });
+
+  test("a dropped GPU sample neither starts nor breaks a stretch of idleness", () => {
+    const watch = new IdleWatch();
+    const quiet = { coresBusy: 0, gpu: 0, netKiB: 0 };
+    const dropout = { ...quiet, gpu: "unknown" as const };
+    // Nothing seen yet: a dropout starts nothing, so the next real read starts at 0.
+    expect(watch.observe(1, dropout, NOW)).toBe(0);
+    expect(watch.observe(1, quiet, NOW + M)).toBe(0);
+    expect(watch.observe(1, dropout, NOW + 5 * M)).toBe(4 * M);
+    // Even a busy CPU on a dropout resets nothing.
+    expect(watch.observe(1, { ...dropout, coresBusy: 50 }, NOW + 6 * M)).toBe(5 * M);
+    expect(watch.observe(1, quiet, NOW + 10 * M)).toBe(9 * M);
+  });
+
   test("forgets boxes that are gone", () => {
     const watch = new IdleWatch();
-    watch.observe(1, { cpu: 0, gpu: 0, netKiB: 0 }, NOW);
+    watch.observe(1, { coresBusy: 0, gpu: 0, netKiB: 0 }, NOW);
     watch.keep(new Set());
-    expect(watch.observe(1, { cpu: 0, gpu: 0, netKiB: 0 }, NOW + 90 * M)).toBe(0);
+    expect(watch.observe(1, { coresBusy: 0, gpu: 0, netKiB: 0 }, NOW + 90 * M)).toBe(0);
   });
 });
 
