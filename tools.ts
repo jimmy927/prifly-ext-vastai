@@ -23,7 +23,7 @@ import {
   readLeases,
   updateLeases,
 } from "./leases";
-import { endsInText, type OfferFilters, searchOffers } from "./offers";
+import { endsInText, type OfferFilters, searchOffers, shareText, vramText } from "./offers";
 import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
 import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
@@ -120,7 +120,7 @@ function offersTool(deps: ToolDeps): ExtensionTool {
       const now = deps.now();
       const lines = offers.map((o) => {
         const gpus = (o.num_gpus ?? 1) > 1 ? `${o.num_gpus}x ` : "";
-        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${Math.round((o.gpu_ram ?? 0) / 1000)} GB VRAM · ${Math.round(o.cpu_cores_effective ?? 0)} cores · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · ${o.geolocation ?? "?"} · ${Math.round(o.inet_down ?? 0)} Mbps down · ${endsInText(o, now)}`;
+        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM · ${Math.round(o.cpu_cores_effective ?? 0)} cores · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · ${o.geolocation ?? "?"} · ${Math.round(o.inet_down ?? 0)} Mbps down · ${endsInText(o, now)}`;
       });
       return `${lines.join("\n")}\n\nRates include the disk. Offers go in a moment: vast_rent looks each up again.`;
     },

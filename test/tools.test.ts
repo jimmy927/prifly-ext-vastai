@@ -82,6 +82,7 @@ describe("vast_rent", () => {
     const card = cards[0];
     expect(card?.columns).toEqual([
       "GPU",
+      "Share",
       "VRAM",
       "CPU",
       "RAM",
@@ -94,9 +95,9 @@ describe("vast_rent", () => {
       "Offer",
     ]);
     expect(card?.action).toBe("Rent");
-    expect(card?.rows.map((r) => r[10])).toEqual(["101", "102"]);
-    expect(card?.rows[0]?.[5]).toBe("0.500");
-    expect(card?.rows[0]?.[6]).toBe("40.0");
+    expect(card?.rows.map((r) => r[11])).toEqual(["101", "102"]);
+    expect(card?.rows[0]?.[6]).toBe("0.500");
+    expect(card?.rows[0]?.[7]).toBe("40.0");
     expect(card?.amount).toEqual({
       label: "Budget for this rental",
       prefix: "$",
@@ -113,22 +114,7 @@ describe("vast_rent", () => {
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
     await tool("vast_rent").call(RENT, ctx);
     // 102 is not on the market any more; 103 costs 25 an hour against a budget of 20.
-    expect(cards[0]?.rows.map((r) => r[10])).toEqual(["101"]);
-  });
-
-  test("an offer that ends before the budget's runtime plus an hour is left off, and the card shows time left", async () => {
-    const at = (hours: number) => NOW / 1000 + hours * 3600;
-    // Budget 20: 101 and 102 run 24 h (held to the longest lease) and need 25 h of end date.
-    const fake = vast([
-      offer(101, 0.5, { end_date: at(24.5) }),
-      offer(102, 0.4, { end_date: at(30) }),
-      offer(103, 0.4, { end_date: at(80) }),
-    ]);
-    const { tool } = await setup(fake);
-    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
-    await tool("vast_rent").call(RENT, ctx);
-    expect(cards[0]?.rows.map((r) => r[10])).toEqual(["102", "103"]);
-    expect(cards[0]?.rows[0]?.[7]).toBe("1 d 6 h");
+    expect(cards[0]?.rows.map((r) => r[11])).toEqual(["101"]);
   });
 
   test("when every offer ends too soon it says so and books nothing", async () => {
@@ -213,6 +199,39 @@ describe("vast_rent", () => {
       env: { A: "b", "-p 8080:8080/tcp": "1" },
       onstart: "echo hi",
     });
+  });
+});
+
+describe("vast_rent card", () => {
+  test("an offer that ends before the budget's runtime plus an hour is left off, and the card shows time left", async () => {
+    const at = (hours: number) => NOW / 1000 + hours * 3600;
+    // Budget 20: 101 and 102 run 24 h (held to the longest lease) and need 25 h of end date.
+    const fake = vast([
+      offer(101, 0.5, { end_date: at(24.5) }),
+      offer(102, 0.4, { end_date: at(30) }),
+      offer(103, 0.4, { end_date: at(80) }),
+    ]);
+    const { tool } = await setup(fake);
+    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
+    await tool("vast_rent").call(RENT, ctx);
+    expect(cards[0]?.rows.map((r) => r[11])).toEqual(["102", "103"]);
+    expect(cards[0]?.rows[0]?.[8]).toBe("1 d 6 h");
+  });
+
+  test("the card says how much of the machine each offer rents, and the VRAM of all its GPUs", async () => {
+    const fake = vast([
+      offer(101, 0.5, { num_gpus: 2, gpu_frac: 1, gpu_ram: 97887 }),
+      offer(102, 0.5, { num_gpus: 1, gpu_frac: 0.125, gpu_ram: 97887 }),
+      offer(103, 0.5),
+    ]);
+    const { tool } = await setup(fake);
+    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
+    await tool("vast_rent").call(RENT, ctx);
+    expect(cards[0]?.rows.map((r) => [r[1], r[2]])).toEqual([
+      ["whole machine", "196 GB (2 × 98)"],
+      ["1 of 8 GPUs", "98 GB"],
+      ["?", "25 GB"],
+    ]);
   });
 });
 

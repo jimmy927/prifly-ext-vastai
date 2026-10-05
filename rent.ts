@@ -16,7 +16,7 @@
 import { z } from "zod";
 import { ACK_TEXT, runwayHours } from "./credit";
 import { book, dropBooking, leasesPath, MAX_AHEAD_MS, updateLeases } from "./leases";
-import { endsTooSoon, fetchOffer, type Offer, timeLeft } from "./offers";
+import { endsTooSoon, fetchOffer, type Offer, shareText, timeLeft, vramText } from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
@@ -100,6 +100,7 @@ function hintOf(purpose: string): string {
 
 const COLUMNS = [
   "GPU",
+  "Share",
   "VRAM",
   "CPU",
   "RAM",
@@ -122,7 +123,8 @@ function rowOf(offer: Offer, budget: number, now: number): string[] {
   const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
   return [
     `${gpus}${offer.gpu_name ?? "?"}`,
-    gb(offer.gpu_ram),
+    shareText(offer),
+    vramText(offer),
     `${Math.round(offer.cpu_cores_effective ?? 0)} cores`,
     gb(offer.cpu_ram),
     `${Math.round(offer.disk_space ?? 0)} GB`,

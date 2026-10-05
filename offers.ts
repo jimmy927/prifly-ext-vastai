@@ -29,7 +29,9 @@ export const OfferSchema = z.object({
   machine_id: field(z.number()),
   gpu_name: field(text),
   num_gpus: field(z.number()),
-  /** MB. */
+  /** The share of the machine's GPUs the offer rents: 1 is the whole machine. */
+  gpu_frac: field(z.number()),
+  /** MB, one GPU's. */
   gpu_ram: field(z.number()),
   cpu_cores_effective: field(z.number()),
   /** MB. */
@@ -149,6 +151,26 @@ export function timeLeft(offer: Offer, nowMs: number): string | null {
 export function endsInText(offer: Offer, nowMs: number): string {
   const left = timeLeft(offer, nowMs);
   return left === null ? "no end date" : `ends in ${left}`;
+}
+
+/** The VRAM of all the offer's GPUs: `gpu_ram` is one card's. */
+export function vramText(offer: Offer): string {
+  if (offer.gpu_ram === undefined) return "?";
+  const gpus = offer.num_gpus ?? 1;
+  const each = Math.round(offer.gpu_ram / 1000);
+  return gpus > 1 ? `${gpus * each} GB (${gpus} × ${each})` : `${each} GB`;
+}
+
+/**
+ * How much of the host the offer rents. `gpu_frac` is its share of the
+ * machine's GPUs, and its cores, RAM and disk are the machine's times that.
+ */
+export function shareText(offer: Offer): string {
+  const frac = offer.gpu_frac;
+  if (frac === undefined || frac <= 0) return "?";
+  if (frac >= 1) return "whole machine";
+  const gpus = offer.num_gpus ?? 1;
+  return `${gpus} of ${Math.round(gpus / frac)} GPUs`;
 }
 
 /** The cheapest offers that pass the filters, cheapest first, at most `limit`. */
