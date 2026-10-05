@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { leasesPath, readLeases } from "../leases";
+import { SSH_KEY_REPAIR, withSshRepair } from "../rent";
 import { ctxFor, H, LABEL, NOW, offer, setup, vast } from "./fake-vast";
+
+/** The onstart of the first create request. */
+const sent = (fake: ReturnType<typeof vast>) =>
+  String(((fake.puts[0]?.body ?? {}) as { onstart?: string }).onstart);
 
 const RENT = {
   name: "job1",
@@ -173,8 +181,9 @@ describe("vast_rent", () => {
       cancel_unavail: true,
       image: "ubuntu:22.04",
       disk: 40,
-      onstart: "sleep infinity",
     });
+    expect(sent(fake)).toBe(`${SSH_KEY_REPAIR}\nsleep infinity`);
+    expect(sent(fake)).not.toMatch(/pkill|HUP/);
     expect(text).toContain("#9101");
     expect(text).toContain(LABEL);
     expect(text).toContain("$0.50/h");
@@ -197,8 +206,73 @@ describe("vast_rent", () => {
     );
     expect(fake.puts[0]?.body).toMatchObject({
       env: { A: "b", "-p 8080:8080/tcp": "1" },
-      onstart: "echo hi",
     });
+    const onstart = sent(fake);
+    expect(onstart).toBe(`${SSH_KEY_REPAIR}\necho hi`);
+    expect(onstart).not.toMatch(/pkill|HUP/);
+  });
+});
+
+describe("withSshRepair", () => {
+  test("the repair comes first and no onstart can make it signal sshd", () => {
+    for (const onstart of [undefined, "echo hi", "a\nb"]) {
+      const out = withSshRepair(onstart);
+      expect(out.startsWith(`${SSH_KEY_REPAIR}\n`)).toBe(true);
+      expect(out.endsWith(`\n${onstart ?? "sleep infinity"}`)).toBe(true);
+      expect(out).not.toMatch(/pkill|HUP/);
+    }
+  });
+
+  const bash = Bun.which("bash");
+  // The repair uses absolute paths, so the script under test is pointed into a tmp dir.
+  const inside = (home: string) =>
+    withSshRepair("echo tail-ran")
+      .replaceAll("/etc/ssh/", `${home}/etc/ssh/`)
+      .replaceAll("/root", `${home}/root`);
+  const run = async (script: string) => {
+    const proc = Bun.spawn([bash as string, "-e", "-c", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    return { out, code: await proc.exited };
+  };
+
+  test.skipIf(!bash)(
+    "the repair cannot stop the caller's onstart, even under bash -e",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "onstart-"));
+      try {
+        // Nothing exists: every chmod and the sed fail, and the tail still runs.
+        const missing = await run(inside(home));
+        expect(missing.code).toBe(0);
+        expect(missing.out).toContain("tail-ran");
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(!bash)("the repair fixes the modes and StrictModes it is meant to", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      await mkdir(join(home, "root/.ssh"), { recursive: true });
+      await mkdir(join(home, "etc/ssh"), { recursive: true });
+      const keys = join(home, "root/.ssh/authorized_keys");
+      const config = join(home, "etc/ssh/sshd_config");
+      await writeFile(keys, "ssh-ed25519 AAAA test\n");
+      await writeFile(config, "#StrictModes yes\n");
+      await chmod(join(home, "root/.ssh"), 0o777);
+      await chmod(keys, 0o666);
+      const ran = await run(inside(home));
+      expect(ran.code).toBe(0);
+      expect(ran.out).toContain("tail-ran");
+      expect((await stat(keys)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(home, "root/.ssh"))).mode & 0o777).toBe(0o700);
+      expect(await readFile(config, "utf8")).toBe("StrictModes no\n");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 

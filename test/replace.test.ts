@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type EnforceDeps, Enforcer } from "../enforce";
 import { leasesPath, readLeases } from "../leases";
 import type { ExtensionApi } from "../prifly-api";
+import { withSshRepair } from "../rent";
 import type { Instance } from "../vast-api";
 import { ctxFor, H, LABEL, NOW, type Offer, offer, SESSION, setup, vast } from "./fake-vast";
 
@@ -103,7 +104,7 @@ describe("a rent keeps what replaces its box", () => {
       count: 0,
       machine: 1,
       replaces: null,
-      request: { image: "ubuntu:22.04", disk: 40, label: LABEL, onstart: "sleep infinity" },
+      request: { image: "ubuntu:22.04", disk: 40, label: LABEL, onstart: withSshRepair() },
     });
   });
 });
