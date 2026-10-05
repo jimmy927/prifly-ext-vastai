@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { leasesPath, readLeases } from "../leases";
@@ -224,20 +224,56 @@ describe("withSshRepair", () => {
   });
 
   const bash = Bun.which("bash");
+  // The repair uses absolute paths, so the script under test is pointed into a tmp dir.
+  const inside = (home: string) =>
+    withSshRepair("echo tail-ran")
+      .replaceAll("/etc/ssh/", `${home}/etc/ssh/`)
+      .replaceAll("/root", `${home}/root`);
+  const run = async (script: string) => {
+    const proc = Bun.spawn([bash as string, "-e", "-c", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = await new Response(proc.stdout).text();
+    return { out, code: await proc.exited };
+  };
+
   test.skipIf(!bash)(
     "the repair cannot stop the caller's onstart, even under bash -e",
     async () => {
       const home = await mkdtemp(join(tmpdir(), "onstart-"));
-      const proc = Bun.spawn([bash as string, "-e", "-c", withSshRepair("echo tail-ran")], {
-        env: { ...process.env, HOME: home },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const out = await new Response(proc.stdout).text();
-      expect(await proc.exited).toBe(0);
-      expect(out).toContain("tail-ran");
+      try {
+        // Nothing exists: every chmod and the sed fail, and the tail still runs.
+        const missing = await run(inside(home));
+        expect(missing.code).toBe(0);
+        expect(missing.out).toContain("tail-ran");
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
     },
   );
+
+  test.skipIf(!bash)("the repair fixes the modes and StrictModes it is meant to", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      await mkdir(join(home, "root/.ssh"), { recursive: true });
+      await mkdir(join(home, "etc/ssh"), { recursive: true });
+      const keys = join(home, "root/.ssh/authorized_keys");
+      const config = join(home, "etc/ssh/sshd_config");
+      await writeFile(keys, "ssh-ed25519 AAAA test\n");
+      await writeFile(config, "#StrictModes yes\n");
+      await chmod(join(home, "root/.ssh"), 0o777);
+      await chmod(keys, 0o666);
+      const ran = await run(inside(home));
+      expect(ran.code).toBe(0);
+      expect(ran.out).toContain("tail-ran");
+      expect((await stat(keys)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(home, "root/.ssh"))).mode & 0o777).toBe(0o700);
+      expect(await readFile(config, "utf8")).toBe("StrictModes no\n");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("vast_rent card", () => {
