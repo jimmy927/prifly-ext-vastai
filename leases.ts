@@ -33,7 +33,7 @@ export const ReplaceSchema = z.object({
   spent: z.number(),
   /** Replacements made so far. */
   count: z.number(),
-  /** What every box of this rent is created with. */
+  /** What every box of this rent is created with: every field of `CreateRequest` (zod drops unknown keys, so a new field there must be added here). */
   request: z.object({
     image: z.string(),
     disk: z.number(),

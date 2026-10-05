@@ -99,8 +99,10 @@ export class BrokenWatch {
    */
   watch(box: Instance, lease: Lease | null, verdict: Verdict, now: number): void {
     const id = box.id;
+    // An unbound lease waits for the next round's `tidy`: cancelling by label would drop the booking.
     if (id === undefined || !this.#host.enforce || lease?.replace == null || lease.cancelled)
       return;
+    if (lease.box === null) return;
     if (verdict.kind !== "leased" && verdict.kind !== "ending" && verdict.kind !== "grace") return;
     const status = box.actual_status ?? box.intended_status;
     if (status === "created" || status === "loading") {
