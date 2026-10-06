@@ -49,6 +49,10 @@ export const InstanceSchema = z.object({
   machine_id: field(z.number()),
   gpu_name: field(text),
   num_gpus: field(z.number()),
+  /** The box's disk, in GB: what a stopped box keeps, and bills. */
+  disk_space: field(z.number()),
+  /** "Quebec, CA": the host's place, its country code last. */
+  geolocation: field(text.nullable()),
   actual_status: field(text.nullable()),
   intended_status: field(text.nullable()),
   dph_total: field(z.number()),

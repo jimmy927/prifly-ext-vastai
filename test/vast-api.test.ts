@@ -29,6 +29,7 @@ describe("parsePage", () => {
       label: "s-0123abcd/lc-box1",
       gpu_name: "RTX 5090",
       num_gpus: 1,
+      disk_space: 40,
       actual_status: "exited",
       intended_status: "stopped",
       end_date: 1790000000,

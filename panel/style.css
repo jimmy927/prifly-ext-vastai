@@ -271,3 +271,164 @@ svg .head {
   padding: 36px;
   text-align: center;
 }
+
+/* The machine cards (machines.js). */
+.mgroup + .mgroup {
+  margin-top: 14px;
+}
+.mgroup h3 {
+  font-size: 13px;
+  margin: 8px 0 2px;
+}
+.msub {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.dim {
+  color: var(--muted-fg);
+}
+.mgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 10px;
+}
+.box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  background: var(--card);
+}
+.box.s-disk {
+  border-style: dashed;
+  background: var(--muted);
+}
+.box header,
+.box footer,
+.box .ssh,
+.box .budget {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.box footer {
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.box .bname {
+  font-size: 14px;
+}
+.box .price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.box .facts,
+.box .load,
+.box .who,
+.box .lease,
+.box .note-line {
+  font-size: 12px;
+}
+.box .who b {
+  font-weight: 600;
+}
+.box .who button {
+  margin-left: 6px;
+}
+.box code {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.box .ssh code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.box .note-line {
+  color: var(--warn);
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--other);
+}
+.dot.t-good {
+  background: var(--now);
+}
+.dot.t-warning {
+  background: var(--warn);
+}
+.dot.t-critical {
+  background: var(--crit);
+}
+.lease.t-warning {
+  color: var(--warn);
+}
+.lease.t-critical {
+  color: var(--crit);
+}
+.badge {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  color: var(--muted-fg);
+}
+.badge.b-running {
+  color: var(--now);
+  border-color: currentColor;
+}
+.badge.b-disk {
+  color: var(--warn);
+  border-color: currentColor;
+}
+.budget .track {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--accent);
+  overflow: hidden;
+}
+.budget .fill {
+  height: 100%;
+  background: var(--now);
+}
+.budget .fill.warn {
+  background: var(--warn);
+}
+.budget .fill.crit {
+  background: var(--crit);
+}
+.budget span {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+button.small {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+button.danger {
+  color: var(--crit);
+}
+button.danger.solid {
+  background: var(--crit);
+  border-color: var(--crit);
+  color: #fff;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ask {
+  font-size: 12px;
+}

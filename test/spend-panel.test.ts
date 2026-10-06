@@ -30,6 +30,11 @@ const REPOS: Record<string, string> = {
   "/src/prifly.worktrees/p121": "jimmy927/prifly",
 };
 const repoOf = (cwd: string) => REPOS[cwd] ?? "?";
+const NO_CARDS = {
+  cards: () => [],
+  act: async () => "",
+  features: [] as string[],
+};
 
 describe("groups", () => {
   test("a label puts a box with its session, its repository, another owner or none", () => {
@@ -113,6 +118,7 @@ describe("answer", () => {
         },
       ],
       now: () => NOW,
+      ...NO_CARDS,
     };
     const data = (await answer(deps, {
       path: "data",
@@ -132,7 +138,9 @@ describe("answer", () => {
     });
     expect(data.live).toEqual({ burn: 0.1, names: ["dictbase"] });
     expect(data.historyFrom).toBe(NOW - 3_600_000);
-    expect(() => answer(deps, { path: "nope", query: {}, body: null })).toThrow("No such request");
+    await expect(answer(deps, { path: "nope", query: {}, body: null })).rejects.toThrow(
+      "No such request",
+    );
   });
 
   test("a box the history knows only by its id takes its label from its charges", async () => {
@@ -149,6 +157,7 @@ describe("answer", () => {
       ]),
       listed: () => [],
       now: () => NOW,
+      ...NO_CARDS,
     };
     const data = (await answer(deps, {
       path: "data",
@@ -156,5 +165,48 @@ describe("answer", () => {
       body: null,
     })) as PanelData;
     expect(data.boxes[0]).toMatchObject({ box: 8, name: "jtrain", group: "s:e5636c90" });
+  });
+});
+
+describe("the machine cards", () => {
+  const deps = (features: string[], pressed: string[]) => ({
+    folder: "/nowhere",
+    owner: "jimmy",
+    sessions: () => SESSIONS,
+    charges: new ChargeCache("/nowhere/charges.json", async () => []),
+    listed: () => [],
+    now: () => NOW,
+    cards: () => [],
+    act: async (key: string, action: string) => {
+      pressed.push(`${action} ${key}`);
+      return `did ${action}`;
+    },
+    features,
+  });
+
+  test("the cards say whether this prifly can open a box's session", async () => {
+    expect(await answer(deps([], []), { path: "boxes", query: {}, body: null })).toEqual({
+      now: NOW,
+      boxes: [],
+      openSession: false,
+    });
+    const open = (await answer(deps(["panel-open-session"], []), {
+      path: "boxes",
+      query: {},
+      body: null,
+    })) as { openSession: boolean };
+    expect(open.openSession).toBe(true);
+  });
+
+  test("a card's button runs the box menu's action, and only those", async () => {
+    const pressed: string[] = [];
+    const d = deps([], pressed);
+    expect(
+      await answer(d, { path: "action", query: {}, body: { key: "54", action: "destroy" } }),
+    ).toEqual({ message: "did destroy" });
+    await expect(
+      answer(d, { path: "action", query: {}, body: { key: "54", action: "rm" } }),
+    ).rejects.toThrow("needs a box key");
+    expect(pressed).toEqual(["destroy 54"]);
   });
 });

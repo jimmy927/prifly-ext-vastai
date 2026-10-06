@@ -1,5 +1,6 @@
 /**
- * What the spend panel (`panel/`) asks for: `api/data?days=<n>`.
+ * What the panel (`panel/`) asks for: `api/boxes` (every box as a card,
+ * `fleet.ts`), `POST api/action` (a card's button) and `api/data?days=<n>`.
  *
  * One answer holds all three charts' data, and the page sums it by day or
  * week, by session or repository, itself:
@@ -16,6 +17,7 @@
 import { basename } from "node:path";
 import { type ChargeCache, type ChargeRow, dayStart, lastDays } from "./charges";
 import { type BoxEvent, eventsPath, readEvents } from "./events";
+import type { BoxCard } from "./fleet";
 import { type Lease, leasesPath, readLeases } from "./leases";
 import type { ExtensionSession, PanelRequest } from "./prifly-api";
 import { repoOfFolder } from "./repo";
@@ -41,7 +43,16 @@ export type PanelDeps = {
   /** The boxes the last refresh listed. */
   listed: () => readonly Instance[];
   now: () => number;
+  /** Every box as the panel's card. */
+  cards: () => BoxCard[];
+  /** A card's button: the same actions as the box's menu. */
+  act: (key: string, action: string) => Promise<string>;
+  /** What this prifly can do: "panel-open-session" lets a card open its session. */
+  features: readonly string[];
 };
+
+/** The card buttons a request may press: the box menu's own action ids. */
+const CARD_ACTIONS = new Set(["extend1", "extend4", "destroy"]);
 
 /** The days a request may ask for, at most. */
 export const MAX_DAYS = 120;
@@ -209,7 +220,21 @@ function firstAt(events: readonly BoxEvent[]): number | null {
 }
 
 /** The panel's requests. */
-export function answer(deps: PanelDeps, request: PanelRequest): Promise<unknown> {
+export async function answer(deps: PanelDeps, request: PanelRequest): Promise<unknown> {
+  if (request.path === "boxes") {
+    return {
+      now: deps.now(),
+      boxes: deps.cards(),
+      openSession: deps.features.includes("panel-open-session"),
+    };
+  }
+  if (request.path === "action") {
+    const { key, action } = (request.body ?? {}) as { key?: unknown; action?: unknown };
+    if (typeof key !== "string" || typeof action !== "string" || !CARD_ACTIONS.has(action)) {
+      throw new Error("A card's action needs a box key and one of extend1, extend4, destroy.");
+    }
+    return { message: await deps.act(key, action) };
+  }
   if (request.path !== "data") throw new Error(`No such request: ${request.path}`);
   const asked = Number(request.query["days"] ?? DEFAULT_DAYS);
   const days = Number.isInteger(asked) && asked > 0 ? Math.min(asked, MAX_DAYS) : DEFAULT_DAYS;

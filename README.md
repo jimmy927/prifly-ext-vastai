@@ -6,7 +6,9 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
 - **Shows your boxes.** Each rented Vast.ai box appears on the session that
   rented it: as an icon on that session's row in the sidebar, and as a chip
   under the goal when the session is open. The colour shows how busy the box
-  is. Boxes that no session claims appear in the status bar.
+  is. Every box is also a card in the **Vast.ai** panel (see below); the
+  status bar keeps only the panel's button, coloured by the boxes on no
+  session here and amber while a stopped box still bills its disk.
 - **Opens a shell on a box.** Click a box's icon and prifly opens `ssh` to it
   in a terminal window of its own: a real desktop window you can move
   anywhere, apart from prifly's. No terminal app is needed.
@@ -24,8 +26,18 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
   `curl -X PUT|POST|DELETE` to console.vast.ai, and names the tool to use.
 - **Teaches sessions the rules.** Every session prifly runs learns how to rent
   without surprise bills.
-- **Shows where the money went.** **Vast.ai spend** in the status bar opens a
-  panel. It has three parts:
+- **One card per box.** **Vast.ai** in the status bar opens a panel. At its
+  top, every box on the account is a card, in two groups: **Running** (billing
+  its whole rate, or starting) and **Disk only** (stopped: the GPU is
+  released, the disk is kept and billed until the box is destroyed). A card
+  shows the GPU, disk, place and uptime; the session that rented it with **Go
+  to session**, or that it is another prifly's or rented by hand; the lease,
+  what it has cost of its budget, its load and its `ssh` command with
+  **Copy**. Its buttons are the box menu's: **+1 h**, **+4 h** and
+  **Destroy…**, which asks again on the card. **Go to session** needs a
+  prifly whose `api.features` include `panel-open-session`; on an older one
+  the button is left out.
+- **Shows where the money went.** Below the cards, the panel has three parts:
   - What the account spent per day or week, stacked by session or repository.
     The amounts are Vast.ai's own charges, fetched one UTC day at a time and
     kept in `charges.json`.
@@ -122,7 +134,7 @@ only `[a-z0-9_-]`, at most 16 characters. It is there because a second prifly
 on another machine, using the same Vast.ai account, labels its boxes the same
 way; without an owner this one would see them as unleased and destroy them.
 The extension manages only boxes of its own owner. Another owner's box shows
-in the status bar, named `<owner>/<name>`, and is never enforced, destroyed
+in the panel, named `<owner>/<name>`, and is never enforced, destroyed
 or guarded.
 
 The tools know the session that calls them (prifly passes its full id) and
@@ -135,7 +147,7 @@ one by hand:
 The name after the last slash is at most 8 characters, so short displays show
 it whole. Every tool acts on the calling session's boxes only. The older label `s-<session8>/<name>`, with no owner, still counts
 as this prifly's owner during the change-over. A box with any other label, or
-none, shows in the status bar marked `?`. A box nobody watches is still
+none, shows in the panel, as rented by hand. A box nobody watches is still
 billing someone, so it stays visible.
 
 ### The display: `index.ts`

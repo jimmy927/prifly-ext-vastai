@@ -44,6 +44,7 @@ import {
   seedFromHostLog,
   withRecorder,
 } from "./events";
+import { boxCards, ownerOf, panelItem, sessionOf } from "./fleet";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
 import { cardLoad, GpuHold } from "./load";
 import {
@@ -55,8 +56,13 @@ import {
   statusOf,
 } from "./machine-card";
 import { readOwner } from "./owner";
-import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
-import { parseLabel } from "./rules";
+import type {
+  Decoration,
+  DecorationTone,
+  ExtensionApi,
+  ExtensionMachine,
+  PanelRequest,
+} from "./prifly-api";
 import { sshCommand, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { makeTools } from "./tools";
@@ -82,7 +88,10 @@ type Config = {
   credit: CreditConfig;
 };
 
-/** What the spend panel reads, while the extension runs. */
+/** The manifest's panel: spend, and every box as a card. */
+const PANEL = "spend";
+
+/** What the panel reads, while the extension runs. */
 let panelDeps: PanelDeps | null = null;
 
 /** The spend panel's requests (`panel/`, manifest `panels`): `spend-panel.ts`. */
@@ -110,6 +119,9 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   const enforcer = new Enforcer(api, config);
   const labels = new Map<number, string>();
   let listed: readonly Instance[] = [];
+  let lastJudged: ReadonlyMap<number, Judged> = new Map();
+  // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
+  const gpuHold = new GpuHold();
   panelDeps = {
     folder: api.folder,
     owner: config.owner,
@@ -119,9 +131,17 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     ),
     listed: () => listed,
     now: Date.now,
+    cards: () =>
+      boxCards(listed, {
+        ...config,
+        sessions: api.sessions(),
+        judged: lastJudged,
+        hold: gpuHold,
+        now: Date.now(),
+      }),
+    act: (key, action) => act(key, action),
+    features: api.features ?? [],
   };
-  // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
-  const gpuHold = new GpuHold();
   let stopped = false;
   let busy = false;
   // The credit is read with the boxes; a failure is logged and the boxes still show.
@@ -159,6 +179,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         }),
       );
       const judged = await enforcer.round(boxes, now);
+      lastJudged = judged;
       const leases = await readLeases(leasesPath(api.folder));
       const credit = await readCredit(boxes, leases, now);
       if (!stopped) {
@@ -194,7 +215,8 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
       credit: config.credit,
     }),
   );
-  api.onAction(async (key, action) => {
+  // A box's menu, on its chip or machine card, and the same buttons on its panel card.
+  const act = async (key: string, action: string): Promise<string> => {
     const hours = EXTEND_HOURS[action];
     if (!/^\d+$/.test(key) || (action !== "destroy" && hours === undefined)) {
       throw new Error(`Unknown action ${action} on ${key}`);
@@ -207,15 +229,16 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         extend(leases, { box: id }, hours, Date.now(), { box: id, label }),
       );
       api.log("extended", { instance: id, until: lease.until, by: "reader" });
-      void refresh();
+      await refresh();
       return `Vast.ai box #${key} is leased until ${new Date(lease.until).toLocaleTimeString()}.`;
     }
-    // "Destroy box…": prifly has already asked the reader.
+    // "Destroy box…": prifly, or the panel's card, has already asked the reader.
     await withKeys(await keys(), (apiKey) => destroyInstance(apiKey, id));
     api.log("destroyed", { instance: id, reason: "destroyed from its menu", by: "reader" });
-    void refresh();
+    await refresh();
     return `Destroyed Vast.ai box #${key}; it no longer bills.`;
-  });
+  };
+  api.onAction(act);
   await refresh();
   const timer = setInterval(() => void refresh(), config.refreshSeconds * 1000);
   return () => {
@@ -260,41 +283,34 @@ function creditConfig(raw: Partial<CreditConfig> | undefined): CreditConfig {
   };
 }
 
-function show(
-  api: ExtensionApi,
+/**
+ * Each box on the session that rented it. A box on no session this prifly
+ * knows is not a chip of its own in the status bar any more: it is a card in
+ * the panel, and its colour goes into the panel's button (`panelItem`).
+ */
+export function show(
+  api: Pick<ExtensionApi, "show" | "sessions">,
   boxes: readonly Instance[],
   judged: ReadonlyMap<number, Judged>,
-  config: Config,
+  config: Pick<Config, "owner" | "enforce" | "sshKey">,
   hold: GpuHold,
   now: number,
 ): void {
   const bySession: Record<string, Decoration[]> = {};
-  const unclaimed: Decoration[] = [];
+  const folded = new Map<string, DecorationTone>();
+  const sessions = api.sessions();
   hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
     const { session, name } = ownerOf(box, config.owner);
     const lease = box.id === undefined ? undefined : judged.get(box.id);
     const item = decoration(box, name, session, lease, config, hold, now);
-    if (session === null) unclaimed.push(item);
-    else bySession[session] = [...(bySession[session] ?? []), item];
+    if (session !== null && sessionOf(session, sessions) !== null) {
+      bySession[session] = [...(bySession[session] ?? []), item];
+    } else folded.set(item.key, item.tone);
   }
-  api.show(bySession, unclaimed);
-}
-
-/**
- * Which of this prifly's sessions rented a box, and what to call it, from its
- * `<owner>/s-<session8>/<name>` label (or the older `s-<session8>/<name>`). A
- * box of another owner has no session here: that prifly's session ids mean
- * nothing on this one, so it is named with its owner.
- */
-function ownerOf(box: Instance, owner: string): { session: string | null; name: string } {
-  const label = box.label ?? "";
-  const parsed = parseLabel(label);
-  if (parsed === null) return { session: null, name: label || `#${box.id ?? "?"}` };
-  if (parsed.owner !== null && parsed.owner !== owner) {
-    return { session: null, name: `${parsed.owner}/${parsed.name}` };
-  }
-  return { session: parsed.session, name: parsed.name };
+  const cards = boxCards(boxes, { ...config, sessions, judged, hold, now });
+  const button = panelItem(cards, folded, PANEL);
+  api.show(bySession, button === null ? [] : [button]);
 }
 
 function decoration(
@@ -302,7 +318,7 @@ function decoration(
   name: string,
   session: string | null,
   lease: Judged | undefined,
-  config: Config,
+  config: Pick<Config, "enforce" | "sshKey">,
   hold: GpuHold,
   now: number,
 ): Decoration {

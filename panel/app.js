@@ -1,8 +1,10 @@
-// The Vast.ai spend panel: what boxes cost per day or week, who spent it, and
-// each box's lease on a timeline. Its data is `api/data?days=<n>`, answered by
+// The Vast.ai panel: every box as a card with its actions (`machines.js`,
+// from `api/boxes`), then what boxes cost per day or week, who spent it, and
+// each box's lease on a timeline (`api/data?days=<n>`). Both are answered by
 // the extension (`spend-panel.ts`).
 
 import { drawBurn } from "./burn.js";
+import { drawMachines } from "./machines.js";
 import { dayMs, dayText, linesOf, money, rank, titleOf } from "./model.js";
 import { drawSpend } from "./spend.js";
 import { drawTimeline } from "./timeline.js";
@@ -58,6 +60,79 @@ async function load(force = false) {
     loading = false;
   }
   draw();
+}
+
+/** The boxes now, and what the cards are doing: a box being acted on, the one asking to destroy. */
+let machines = null;
+const ui = { busy: new Set(), confirm: null, said: null };
+
+async function loadMachines() {
+  try {
+    const response = await fetch("api/boxes");
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    machines = body;
+  } catch (caught) {
+    ui.said = {
+      bad: true,
+      text: `Could not read the boxes: ${caught instanceof Error ? caught.message : caught}`,
+    };
+  }
+  drawCards();
+}
+
+function drawCards() {
+  $("mnote").innerHTML =
+    ui.said === null ? "" : `<div class="note${ui.said.bad ? " bad" : ""}">${ui.said.text}</div>`;
+  drawMachines($("machines"), machines, ui);
+}
+
+async function act(key, action) {
+  ui.busy.add(key);
+  ui.confirm = null;
+  drawCards();
+  try {
+    const response = await fetch("api/action", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, action }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+    ui.said = { bad: false, text: body.message };
+  } catch (caught) {
+    ui.said = { bad: true, text: caught instanceof Error ? caught.message : String(caught) };
+  } finally {
+    ui.busy.delete(key);
+  }
+  await loadMachines();
+}
+
+function cardClicks() {
+  $("machines").onclick = (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const { open, copy, ask, act: action, key } = button.dataset;
+    if (open !== undefined) parent.postMessage({ type: "prifly-open-session", session: open }, "*");
+    if (copy !== undefined) {
+      void navigator.clipboard?.writeText(copy).then(
+        () => {
+          button.textContent = "Copied";
+          setTimeout(() => (button.textContent = "Copy"), 1500);
+        },
+        () => {},
+      );
+    }
+    if (ask !== undefined) {
+      ui.confirm = ask;
+      drawCards();
+    }
+    if (button.hasAttribute("data-cancel")) {
+      ui.confirm = null;
+      drawCards();
+    }
+    if (action !== undefined && key !== undefined) void act(key, action);
+  };
 }
 
 function tiles(lines, ranking) {
@@ -158,7 +233,10 @@ function controls() {
     state.only = null;
     state.allBurners = false;
   });
-  $("reload").onclick = () => void load(true);
+  $("reload").onclick = () => {
+    void load(true);
+    void loadMachines();
+  };
   $("spendLegend").onclick = (event) => {
     const key = event.target.closest("[data-k]")?.dataset.k;
     if (key !== undefined) choose(state.only === key ? null : key);
@@ -210,7 +288,11 @@ addEventListener("resize", () => {
 });
 // Today's bar grows: read again every ten minutes while the panel is open.
 setInterval(() => void load(true), 10 * 60_000);
+// The boxes are listed once a minute by the extension: the cards follow.
+setInterval(() => void loadMachines(), 30_000);
 
 controls();
+cardClicks();
 tooltips();
+void loadMachines();
 void load();

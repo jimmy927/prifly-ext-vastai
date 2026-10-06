@@ -54,6 +54,13 @@ export type Decoration = {
    * the reader `confirm`, when it is not "".
    */
   actions?: DecorationAction[] | undefined;
+  /**
+   * The `id` of one of this extension's own panels that the item is the state
+   * of. Only for the `unclaimed` items of `show`: the status bar then draws no
+   * chip, but that panel's button, its icon coloured by `tone`, its hover
+   * holding `label` and `details`. An older prifly draws an ordinary chip.
+   */
+  panel?: string | undefined;
 };
 
 export type DecorationAction = {
