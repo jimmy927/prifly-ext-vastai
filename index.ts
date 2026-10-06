@@ -155,15 +155,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         claims,
       }),
     act: (key, action) => act(key, action),
-    terminal: (key) => {
-      const box = listed.find((b) => String(b.id) === key);
-      const target = box === undefined ? null : sshTarget(box);
-      if (box === undefined || target === null) return null;
-      return {
-        title: `${ownerOf(box, config.owner).name} — ssh root@${target.host}:${target.port}`,
-        command: sshCommand(target.host, target.port, config.sshKey),
-      };
-    },
+    terminal: (key) => shellOf(listed, key, config),
     features: api.features ?? [],
   };
   let stopped = false;
@@ -271,6 +263,21 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     panelDeps = null;
     enforcer.stop();
     clearInterval(timer);
+  };
+}
+
+/** ssh to the running box with this key, as a click on its chip opens; null when it has none. */
+function shellOf(
+  boxes: readonly Instance[],
+  key: string,
+  config: Pick<Config, "owner" | "sshKey">,
+): { title: string; command: string[] } | null {
+  const box = boxes.find((b) => String(b.id) === key);
+  const target = box === undefined ? null : sshTarget(box);
+  if (box === undefined || target === null) return null;
+  return {
+    title: `${ownerOf(box, config.owner).name} — ssh root@${target.host}:${target.port}`,
+    command: sshCommand(target.host, target.port, config.sshKey),
   };
 }
 
