@@ -47,7 +47,9 @@ export type PanelDeps = {
   cards: () => BoxCard[];
   /** A card's button: the same actions as the box's menu. */
   act: (key: string, action: string) => Promise<string>;
-  /** What this prifly can do: "panel-open-session" lets a card open its session. */
+  /** ssh to a running box, for a card's "Open shell"; null when it has none. */
+  terminal: (key: string) => { title: string; command: string[] } | null;
+  /** What this prifly can do: "panel-open-session" and "panel-open-terminal" let a card open its session and a shell. */
   features: readonly string[];
 };
 
@@ -226,6 +228,7 @@ export async function answer(deps: PanelDeps, request: PanelRequest): Promise<un
       now: deps.now(),
       boxes: deps.cards(),
       openSession: deps.features.includes("panel-open-session"),
+      openShell: deps.features.includes("panel-open-terminal"),
     };
   }
   if (request.path === "action") {

@@ -35,6 +35,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ChargeCache, chargesPath, fetchDay } from "./charges";
 import { CREDIT_DEFAULTS, type CreditConfig } from "./credit";
+import { claimMap, endpointsPath, readClaims } from "./endpoints";
 import { Enforcer, type Judged } from "./enforce";
 import {
   eventsPath,
@@ -44,7 +45,7 @@ import {
   seedFromHostLog,
   withRecorder,
 } from "./events";
-import { boxCards, ownerOf, panelItem, sessionOf } from "./fleet";
+import { boxCards, ownerOf, panelItem, sessionKeyOf, sessionOf } from "./fleet";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
 import { cardLoad, GpuHold } from "./load";
 import {
@@ -100,6 +101,18 @@ export function panel(_panelId: string, request: PanelRequest): Promise<unknown>
   return answer(panelDeps, request);
 }
 
+/**
+ * The terminal a panel card's "Open shell" opens (prifly's `prifly-open-terminal`):
+ * ssh to the running box with this key, as a click on its chip does. The page
+ * names only the box; the command is made here.
+ */
+export function terminal(
+  _panelId: string,
+  key: string,
+): { title: string; command: string[] } | null {
+  return panelDeps?.terminal(key) ?? null;
+}
+
 export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   // Every event the extension logs is written to the boxes' history too (`events.ts`).
   const history = eventsPath(rawApi.folder);
@@ -120,6 +133,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   const labels = new Map<number, string>();
   let listed: readonly Instance[] = [];
   let lastJudged: ReadonlyMap<number, Judged> = new Map();
+  let claims: ReadonlyMap<number, string> = new Map();
   // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
   const gpuHold = new GpuHold();
   panelDeps = {
@@ -138,8 +152,18 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         judged: lastJudged,
         hold: gpuHold,
         now: Date.now(),
+        claims,
       }),
     act: (key, action) => act(key, action),
+    terminal: (key) => {
+      const box = listed.find((b) => String(b.id) === key);
+      const target = box === undefined ? null : sshTarget(box);
+      if (box === undefined || target === null) return null;
+      return {
+        title: `${ownerOf(box, config.owner).name} — ssh root@${target.host}:${target.port}`,
+        command: sshCommand(target.host, target.port, config.sshKey),
+      };
+    },
     features: api.features ?? [],
   };
   let stopped = false;
@@ -180,11 +204,12 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
       );
       const judged = await enforcer.round(boxes, now);
       lastJudged = judged;
+      claims = await readEndpointClaims(api, claims);
       const leases = await readLeases(leasesPath(api.folder));
       const credit = await readCredit(boxes, leases, now);
       if (!stopped) {
         remember(labels, boxes);
-        show(api, boxes, judged, config, gpuHold, now);
+        show(api, boxes, judged, config, gpuHold, now, claims);
         // Absent on a prifly older than "machines": the boxes still show.
         const waiting = leases.filter((l) => l.box === null);
         api.machines?.report(machinesOf(boxes, config, judged, waiting, credit));
@@ -249,6 +274,21 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   };
 }
 
+/** The claimed serverless endpoints (`endpoints.ts`); on a failure, logged, the last ones read. */
+function readEndpointClaims(
+  api: Pick<ExtensionApi, "folder" | "log">,
+  last: ReadonlyMap<number, string>,
+): Promise<ReadonlyMap<number, string>> {
+  return readClaims(endpointsPath(api.folder))
+    .then(claimMap)
+    .catch((caught: unknown) => {
+      api.log("endpoints_read_failed", {
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+      return last;
+    });
+}
+
 /** Each box's label by its id, for the menu's "Extend lease" on a box with none. */
 function remember(labels: Map<number, string>, boxes: readonly Instance[]): void {
   labels.clear();
@@ -295,20 +335,23 @@ export function show(
   config: Pick<Config, "owner" | "enforce" | "sshKey">,
   hold: GpuHold,
   now: number,
+  claims: ReadonlyMap<number, string> = new Map(),
 ): void {
   const bySession: Record<string, Decoration[]> = {};
   const folded = new Map<string, DecorationTone>();
   const sessions = api.sessions();
   hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
-    const { session, name } = ownerOf(box, config.owner);
+    const { name } = ownerOf(box, config.owner);
+    // A serverless worker is on the session that claimed its endpoint.
+    const session = sessionKeyOf(box, config.owner, claims);
     const lease = box.id === undefined ? undefined : judged.get(box.id);
     const item = decoration(box, name, session, lease, config, hold, now);
     if (session !== null && sessionOf(session, sessions) !== null) {
       bySession[session] = [...(bySession[session] ?? []), item];
     } else folded.set(item.key, item.tone);
   }
-  const cards = boxCards(boxes, { ...config, sessions, judged, hold, now });
+  const cards = boxCards(boxes, { ...config, sessions, judged, hold, now, claims });
   const button = panelItem(cards, folded, PANEL);
   api.show(bySession, button === null ? [] : [button]);
 }

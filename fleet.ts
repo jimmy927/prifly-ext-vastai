@@ -16,6 +16,7 @@
  *   until it is destroyed.
  */
 
+import { type Worker, workerOf } from "./endpoints";
 import type { Judged } from "./enforce";
 import { cardLoad, type GpuHold } from "./load";
 import { isManaged, leaseLine } from "./machine-card";
@@ -47,8 +48,10 @@ export type BoxCard = {
   load: { line: string; tone: DecorationTone } | null;
   /** The session that rented it: its full id when this prifly knows it. */
   session: { short: string; id: string | null; title: string } | null;
-  /** Whose it is: this prifly's, another prifly's (`owner`), or nobody's label. */
-  owner: { kind: "mine" | "foreign" | "none"; name: string | null };
+  /** Whose it is: this prifly's, another prifly's (`owner`), a serverless endpoint's, or nobody's. */
+  owner: { kind: "mine" | "foreign" | "serverless" | "none"; name: string | null };
+  /** The endpoint a serverless worker works for; null for any other box. */
+  serverless: Worker | null;
   lease: { short: string; tone: DecorationTone | null; details: string[] } | null;
   spent: number | null;
   budget: number | null;
@@ -81,6 +84,9 @@ export function ownerOf(
 ): { session: string | null; name: string; foreign: string | null } {
   const label = box.label ?? "";
   const parsed = parseLabel(label);
+  // A serverless worker goes by its endpoint's name; its session comes from a claim.
+  const worker = parsed === null ? workerOf(label) : null;
+  if (worker !== null) return { session: null, name: worker.endpoint, foreign: null };
   if (parsed === null) {
     return { session: null, name: label || `#${box.id ?? "?"}`, foreign: null };
   }
@@ -106,20 +112,45 @@ export type CardDeps = {
   judged: ReadonlyMap<number, Judged>;
   hold: GpuHold;
   now: number;
+  /** The session each claimed serverless endpoint is for, by endpoint id (`endpoints.ts`). */
+  claims: ReadonlyMap<number, string>;
 };
 
+/**
+ * The session a box is on: the one its label names, or, for a serverless
+ * worker, the one that claimed its endpoint. Its 8 characters, or a full id.
+ */
+export function sessionKeyOf(
+  box: Instance,
+  owner: string,
+  claims: ReadonlyMap<number, string>,
+): string | null {
+  const worker = workerOf(box.label ?? "");
+  if (worker !== null) return claims.get(worker.endpointId) ?? null;
+  return ownerOf(box, owner).session;
+}
+
 /** Whose a box is, from its label: its session (found among the host's), its owner. */
-function whoseBox(box: Instance, deps: CardDeps): Pick<BoxCard, "name" | "session" | "owner"> {
-  const { session, name, foreign } = ownerOf(box, deps.owner);
+function whoseBox(
+  box: Instance,
+  deps: CardDeps,
+): Pick<BoxCard, "name" | "session" | "owner" | "serverless"> {
+  const { name, foreign } = ownerOf(box, deps.owner);
+  const worker = workerOf(box.label ?? "");
+  const session = sessionKeyOf(box, deps.owner, deps.claims);
   const known = session === null ? null : sessionOf(session, deps.sessions);
+  const short = session?.slice(0, 8) ?? "";
   const labelled = parseLabel(box.label ?? "") !== null;
+  const kind =
+    foreign !== null ? "foreign" : labelled ? "mine" : worker !== null ? "serverless" : "none";
   return {
     name,
     session:
       session === null
         ? null
-        : { short: session, id: known?.id ?? null, title: known?.title || `Session ${session}` },
-    owner: { kind: foreign !== null ? "foreign" : labelled ? "mine" : "none", name: foreign },
+        : { short, id: known?.id ?? null, title: known?.title || `Session ${short}` },
+    owner: { kind, name: foreign },
+    serverless: worker,
   };
 }
 

@@ -432,3 +432,8 @@ button:disabled {
 .ask {
   font-size: 12px;
 }
+button.primary {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}

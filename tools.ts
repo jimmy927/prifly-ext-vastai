@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { cpuScores } from "./cpu-score";
 import { available, RAISE_ACK, runwayHours } from "./credit";
+import { claimEndpoint, endpointsPath, workerOf } from "./endpoints";
 import {
   cancel,
   extend,
@@ -55,7 +56,7 @@ import {
   sshText,
   type ToolDeps,
 } from "./tool-kit";
-import { type Instance, requestLogs, withKeys } from "./vast-api";
+import { type Instance, listInstances, requestLogs, withKeys } from "./vast-api";
 
 export function makeTools(deps: ToolDeps): ExtensionTool[] {
   return [
@@ -65,7 +66,55 @@ export function makeTools(deps: ToolDeps): ExtensionTool[] {
     logsTool(deps),
     extendTool(deps),
     cancelTool(deps),
+    claimEndpointTool(deps),
   ];
+}
+
+/**
+ * Claim a serverless endpoint for the calling session (`endpoints.ts`): its
+ * workers' labels name only the endpoint, so without a claim the reader sees
+ * them as nobody's.
+ */
+function claimEndpointTool(deps: ToolDeps): ExtensionTool {
+  return defineTool(
+    "vast_claim_endpoint",
+    "Say that a Vast.ai serverless endpoint is this session's: call it right after you create one (the SDK logs \"Created endpoint <id>\"), and when you start sending work to one another session made. Its workers (labelled <endpoint name>:<endpoint id>:<group id>) then show on this session and in the Vast.ai panel under its title, instead of as nobody's. Nothing on Vast.ai changes.",
+    z.strictObject({
+      endpoint_id: z.number().int().positive().describe("The endpoint's id: 39180"),
+      name: z.string().min(1).optional().describe("The endpoint's name: rj-judge"),
+    }),
+    async (args, ctx) => {
+      const workers = await listInstances(await deps.keys(), deps.get)
+        .then((boxes) =>
+          boxes.flatMap((box) => {
+            const worker = workerOf(box.label ?? "");
+            return worker?.endpointId === args.endpoint_id ? [worker] : [];
+          }),
+        )
+        .catch(() => []);
+      const name = args.name ?? workers[0]?.endpoint ?? `endpoint ${args.endpoint_id}`;
+      const earlier = await claimEndpoint(endpointsPath(deps.folder), {
+        endpoint: args.endpoint_id,
+        name,
+        session: ctx.session,
+        at: deps.now(),
+      });
+      deps.log("endpoint_claimed", {
+        endpoint: args.endpoint_id,
+        session: ctx.session.slice(0, 8),
+      });
+      deps.refresh();
+      const from =
+        earlier === null || earlier.session === ctx.session
+          ? ""
+          : ` It was session ${earlier.session.slice(0, 8)}'s until now.`;
+      const running =
+        workers.length === 0
+          ? "It has no workers right now."
+          : `It has ${workers.length} worker(s) now.`;
+      return `Endpoint ${name} (${args.endpoint_id}) is this session's.${from} ${running}`;
+    },
+  );
 }
 
 const OffersArgs = z.strictObject({

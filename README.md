@@ -15,9 +15,9 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
 - **Destroys a box.** Right-click a box's icon, choose **Destroy box…**, and
   confirm.
 - **Rents boxes, under a budget you set.** Sessions rent, extend, cancel and
-  inspect boxes only through six tools this extension serves
+  inspect boxes only through seven tools this extension serves
   (`vast_offers`, `vast_rent`, `vast_boxes`, `vast_logs`, `vast_extend`,
-  `vast_cancel`). `vast_rent` shows the offers on a card with an editable
+  `vast_cancel`, `vast_claim_endpoint`). `vast_rent` shows the offers on a card with an editable
   budget; nothing is rented until you click **Rent**, and the amount you
   confirm is the box's hard limit. Right-click a session and choose **Rent a
   Vast.ai machine…** to start one.
@@ -33,8 +33,13 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
   shows the GPU, disk, place and uptime; the session that rented it with **Go
   to session**, or that it is another prifly's or rented by hand; the lease,
   what it has cost of its budget, its load and its `ssh` command with
-  **Copy**. Its buttons are the box menu's: **+1 h**, **+4 h** and
-  **Destroy…**, which asks again on the card. **Go to session** needs a
+  **Copy** (and **Open shell**, ssh in prifly's terminal window, on a prifly whose
+  `api.features` include `panel-open-terminal`). Its buttons are the box menu's: **+1 h**, **+4 h** and
+  **Destroy…**, which asks again on the card. A serverless endpoint's worker
+  (labelled `<endpoint>:<endpoint id>:<group id>`) goes by its endpoint's
+  name and shows on the session that claimed the endpoint with
+  `vast_claim_endpoint` (kept in `endpoints.json`); unclaimed, its card says
+  so. **Go to session** needs a
   prifly whose `api.features` include `panel-open-session`; on an older one
   the button is left out.
 - **Shows where the money went.** Below the cards, the panel has three parts:
@@ -387,6 +392,7 @@ tool acts on the calling session's boxes only.
 | `vast_logs` | `name`, `tail`: asks Vast.ai for the box's logs (`PUT /api/v0/instances/request_logs/<id>/`), fetches the returned URL, returns the end. |
 | `vast_extend` | `name`, `hours`: free within the budget, otherwise asks the reader to raise it. |
 | `vast_cancel` | `name`: ends the lease; the enforcer saves and destroys the box within a minute. |
+| `vast_claim_endpoint` | `endpoint_id`, optionally `name`: says a serverless endpoint is the calling session's, so its workers show on it. A later claim by another session takes it over. Changes nothing on Vast.ai. |
 
 ### The hook: `hooks/`
 

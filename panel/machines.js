@@ -2,7 +2,8 @@
 // running ones apart from the stopped ones that only keep (and bill) a disk.
 // A card's buttons post `api/action`, the same actions as the box's menu;
 // "Go to session" asks the window to open the session that rented it, on a
-// prifly that can (`openSession`).
+// prifly that can (`openSession`), and "Open shell" ssh in prifly's terminal
+// window (`openShell`): the page names the box, the extension makes the command.
 
 const esc = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -16,6 +17,13 @@ function ago(ms) {
 }
 
 /** Who the box is: its session, another prifly's, or rented by hand. */
+/** A serverless worker's endpoint, and who claimed it. */
+function endpointLine(box) {
+  const w = box.serverless;
+  if (w === null) return "";
+  return `<div class="who dim">Serverless worker of endpoint <b>${esc(w.endpoint)}</b> <code>${w.endpointId}</code> · group ${w.group}</div>`;
+}
+
 function whose(box, canOpen) {
   if (box.session !== null) {
     const known = box.session.id !== null;
@@ -28,6 +36,9 @@ function whose(box, canOpen) {
   }
   if (box.owner.kind === "foreign") {
     return `<div class="who dim">${esc(box.owner.name)}'s prifly: never managed here</div>`;
+  }
+  if (box.serverless !== null) {
+    return `<div class="who dim">No session has claimed endpoint ${box.serverless.endpointId}: the session using it can say so with vast_claim_endpoint</div>`;
   }
   return `<div class="who dim">No session: rented by hand or by other software</div>`;
 }
@@ -66,10 +77,10 @@ function leaseLine(box) {
   return `<div class="lease t-${box.lease.tone ?? "plain"}" data-tip="${tip}">${text}</div>`;
 }
 
-function sshLine(box) {
+function sshLine(box, ui) {
   if (box.ssh === null) return "";
   const cmd = esc(box.ssh);
-  return `<div class="ssh"><code title="${cmd}">${cmd}</code><button type="button" class="plain small" data-copy="${cmd}">Copy</button></div>`;
+  return `<div class="ssh"><code title="${cmd}">${cmd}</code><button type="button" class="plain small" data-copy="${cmd}">Copy</button>${ui.shell ? `<button type="button" class="plain small primary" data-shell="${esc(box.key)}">Open shell</button>` : ""}</div>`;
 }
 
 /** Extend, while the lease rules act on it; Destroy, asked again on the card itself. */
@@ -90,15 +101,16 @@ function card(box, ui, canOpen, now) {
   const disk = box.state === "disk";
   const tone = disk ? "warning" : (box.lease?.tone ?? box.load?.tone ?? "muted");
   const badge = box.state === "running" ? "running" : box.status;
+  const kind = box.serverless === null ? "" : `<span class="badge">serverless</span>`;
   const load = box.load === null ? "" : `<div class="load dim">${esc(box.load.line)}</div>`;
   const stopped = disk
     ? `<div class="note-line">Stopped: the GPU is released, the disk is kept and billed until the box is destroyed.</div>`
     : "";
   return `<article class="box s-${box.state}">
-    <header><span class="dot t-${tone}"></span><b class="bname">${esc(box.name)}</b><span class="badge b-${box.state}">${esc(badge)}</span><span class="grow"></span><span class="price">${price(box)}</span></header>
+    <header><span class="dot t-${tone}"></span><b class="bname">${esc(box.name)}</b><span class="badge b-${box.state}">${esc(badge)}</span>${kind}<span class="grow"></span><span class="price">${price(box)}</span></header>
     <div class="facts dim">${facts(box, now)}</div>
-    ${whose(box, canOpen)}
-    ${stopped}${leaseLine(box)}${spendBar(box)}${load}${sshLine(box)}
+    ${endpointLine(box)}${whose(box, canOpen)}
+    ${stopped}${leaseLine(box)}${spendBar(box)}${load}${sshLine(box, ui)}
     <footer>${buttons(box, ui)}</footer>
   </article>`;
 }
@@ -113,7 +125,8 @@ export function drawMachines(el, answer, ui) {
     el.innerHTML = `<div class="dim">Reading the boxes…</div>`;
     return;
   }
-  const { boxes, openSession, now } = answer;
+  const { boxes, openSession, openShell, now } = answer;
+  ui.shell = openShell === true;
   if (boxes.length === 0) {
     el.innerHTML = `<div class="dim">No boxes on the account: nothing is billing.</div>`;
     return;

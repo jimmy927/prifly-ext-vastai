@@ -107,7 +107,8 @@ export async function updateLeases<T>(
   }
 }
 
-async function lock(path: string): Promise<() => Promise<void>> {
+/** Hold `path` as a lock file; the function given back lets go. */
+export async function lock(path: string): Promise<() => Promise<void>> {
   await mkdir(dirname(path), { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {

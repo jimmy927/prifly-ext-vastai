@@ -33,6 +33,7 @@ const repoOf = (cwd: string) => REPOS[cwd] ?? "?";
 const NO_CARDS = {
   cards: () => [],
   act: async () => "",
+  terminal: () => null,
   features: [] as string[],
 };
 
@@ -181,6 +182,7 @@ describe("the machine cards", () => {
       pressed.push(`${action} ${key}`);
       return `did ${action}`;
     },
+    terminal: () => null,
     features,
   });
 
@@ -189,13 +191,14 @@ describe("the machine cards", () => {
       now: NOW,
       boxes: [],
       openSession: false,
+      openShell: false,
     });
-    const open = (await answer(deps(["panel-open-session"], []), {
+    const open = (await answer(deps(["panel-open-session", "panel-open-terminal"], []), {
       path: "boxes",
       query: {},
       body: null,
-    })) as { openSession: boolean };
-    expect(open.openSession).toBe(true);
+    })) as { openSession: boolean; openShell: boolean };
+    expect(open).toMatchObject({ openSession: true, openShell: true });
   });
 
   test("a card's button runs the box menu's action, and only those", async () => {

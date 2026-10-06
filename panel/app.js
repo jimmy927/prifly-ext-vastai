@@ -64,7 +64,7 @@ async function load(force = false) {
 
 /** The boxes now, and what the cards are doing: a box being acted on, the one asking to destroy. */
 let machines = null;
-const ui = { busy: new Set(), confirm: null, said: null };
+const ui = { busy: new Set(), confirm: null, said: null, shell: false };
 
 async function loadMachines() {
   try {
@@ -112,8 +112,9 @@ function cardClicks() {
   $("machines").onclick = (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    const { open, copy, ask, act: action, key } = button.dataset;
+    const { open, shell, copy, ask, act: action, key } = button.dataset;
     if (open !== undefined) parent.postMessage({ type: "prifly-open-session", session: open }, "*");
+    if (shell !== undefined) parent.postMessage({ type: "prifly-open-terminal", key: shell }, "*");
     if (copy !== undefined) {
       void navigator.clipboard?.writeText(copy).then(
         () => {

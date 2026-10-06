@@ -23,6 +23,7 @@ const deps = {
   judged: new Map(),
   hold: new GpuHold(),
   now: NOW,
+  claims: new Map<number, string>(),
 };
 
 describe("a box's state", () => {

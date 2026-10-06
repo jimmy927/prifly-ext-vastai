@@ -273,4 +273,16 @@ export type ExtensionModule = {
    * Answered as JSON; a throw becomes a 500 whose body is `{ error }`.
    */
   panel?: (panelId: string, request: PanelRequest) => unknown;
+  /**
+   * The terminal a panel's page asks for with `prifly-open-terminal` and a
+   * key: what prifly opens, as for a decoration's `terminal`. Null: none.
+   * Only on a prifly whose `features` include "panel-open-terminal".
+   */
+  terminal?: (
+    panelId: string,
+    key: string,
+  ) =>
+    | { title: string; command: string[] }
+    | null
+    | Promise<{ title: string; command: string[] } | null>;
 };
