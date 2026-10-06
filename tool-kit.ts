@@ -52,12 +52,15 @@ export function hasCells(deps: ToolDeps): boolean {
 }
 
 /**
- * The rate on the rent card: "0.45", three decimals under $0.10 so a cheap
- * box's rate is not rounded away. It stays a number: prifly divides the
- * budget by this cell for the Hours column.
+ * The rate on the rent card: "0.45", "12.50". It stays a number, and prifly
+ * divides the budget by this cell for the Hours column, so it keeps the
+ * rounding error near 0.5% or less: two decimals from $1, three from $0.10
+ * and four below, with trailing zeros dropped down to two decimals ("0.45",
+ * "0.50", not "0.450").
  */
 export function cardRate(rate: number): string {
-  return rate.toFixed(rate < 0.1 ? 3 : 2);
+  if (rate >= 1) return rate.toFixed(2);
+  return rate.toFixed(rate < 0.1 ? 4 : 3).replace(/(\.\d\d\d*?)0+$/, "$1");
 }
 
 /** The account's credit and what is committed on it, without `except`; null when Vast.ai does not say. */

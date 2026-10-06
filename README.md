@@ -280,7 +280,7 @@ its end. The extension now checks every booking against the credit.
   chip with no PassMark entry or no known thread count shows "–". Each is
   followed by its value per $/h ("97 · 214", "18.7k · 41.4k"). The marks are
   read from cpubenchmark.net once a day; if that fails every chip is unscored
-  and the rent goes on. $/h has two decimals (three under $0.10) and stays a
+  and the rent goes on. $/h has two decimals from $1, three from $0.10 and four below ("0.45", "0.0995"), so its rounding stays under 0.5%, and stays a
   plain number: the Hours column is the budget divided by it. Ends in is whole
   days ("14 d"), under a day hours ("7 h"), or "no end date". Where is the
   country code at the end of Vast's location. On a prifly whose

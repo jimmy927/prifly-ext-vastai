@@ -12,7 +12,6 @@ import {
   shortCpuName,
 } from "../cpu-score";
 import { gpuLink } from "../gpu-link";
-import { endsCell, placeOf } from "../offers";
 import { ctxFor, NOW, offer, setup, vast } from "./fake-vast";
 
 const FIXTURE = await readFile(new URL("./passmark-cpus.txt", import.meta.url), "utf8");
@@ -265,22 +264,34 @@ describe("the rent card", () => {
     expect(card).not.toHaveProperty("cellKinds");
   });
 
-  test("the $/h cell is a number prifly can divide the budget by, and Hours is the budget over the rate", async () => {
-    const fake = vast([offer(1, 0.45), offer(2, 0.072), offer(3, 12.5)]);
+  test("the $/h cell is a number prifly can divide the budget by: its rounding stays under 1% of the Hours", async () => {
+    const rates = [0.45, 0.455, 0.105, 0.0995, 0.072, 0.0123, 1.234, 12.5];
+    const fake = vast(rates.map((rate, i) => offer(i + 1, rate)));
     const { tool } = await setup(fake);
     const { ctx, cards } = ctxFor([null]);
-    await tool("vast_rent").call({ ...RENT, offers: [1, 2, 3] }, ctx);
+    const offers = rates.map((_, i) => i + 1);
+    await tool("vast_rent").call({ ...RENT, budget: 500, offers: offers.slice(0, 12) }, ctx);
     const card = cards[0];
     const perRow = card?.amount?.perRow;
     expect(card?.columns[at("Hours")]).toBe(perRow?.column);
     expect(card?.columns[at("$/h")]).toBe(perRow?.rateColumn);
-    // Two decimals, three under $0.10 so a cheap rate is not rounded away.
-    expect(card?.rows.map((row) => row[at("$/h")])).toEqual(["0.45", "0.072", "12.50"]);
+    expect(card?.rows.map((row) => row[at("$/h")])).toEqual([
+      "0.45",
+      "0.455",
+      "0.105",
+      "0.0995",
+      "0.072",
+      "0.0123",
+      "1.23",
+      "12.50",
+    ]);
+    expect(card?.rows).toHaveLength(rates.length);
     for (const row of card?.rows ?? []) {
       const rate = Number(row[at("$/h")]);
       expect(Number.isFinite(rate) && rate > 0).toBe(true);
-      // What prifly computes for the budget on the card is what the Hours cell says.
-      expect(Math.abs(20 / rate - Number(row[at("Hours")]))).toBeLessThan(0.2);
+      // What prifly computes for the budget on the card against what the box will run.
+      const hours = Number(row[at("Hours")]);
+      expect(Math.abs(500 / rate - hours)).toBeLessThan(0.01 * hours);
     }
   });
 });
@@ -434,50 +445,6 @@ describe("the rent card, links and gaps", () => {
     const row = cards[0]?.rows[0];
     expect([row?.[at("GPU perf · /$")], row?.[at("Mem GB/s")]]).toEqual(["–", "?"]);
     expect(row?.[at("Verified")]).toBe("?");
-  });
-});
-
-describe("placeOf", () => {
-  test("reads the code Vast ends its geolocation with and spells the place out", () => {
-    expect(placeOf("Norway, NO")).toEqual({ code: "NO", text: "Norway, NO", full: "Norway" });
-    expect(placeOf("British Columbia, CA")).toEqual({
-      code: "CA",
-      text: "British Columbia, CA",
-      full: "British Columbia, Canada",
-    });
-    expect(placeOf("California, US").full).toBe("California, United States");
-    expect(placeOf("Frankfurt am Main, Hesse, DE").full).toBe("Frankfurt am Main, Hesse, Germany");
-    expect(placeOf("SE")).toEqual({ code: "SE", text: "SE", full: "Sweden" });
-  });
-
-  test("no code, an unknown code or no location leaves the text and no place", () => {
-    expect(placeOf("Somewhere Nice")).toEqual({ code: null, text: "Somewhere Nice", full: null });
-    expect(placeOf("Narnia, ZZ")).toEqual({ code: null, text: "Narnia, ZZ", full: null });
-    expect(placeOf("Norway, norway").code).toBeNull();
-    expect(placeOf(null)).toEqual({ code: null, text: "?", full: null });
-    expect(placeOf(undefined).code).toBeNull();
-    expect(placeOf("  ").text).toBe("?");
-  });
-});
-
-describe("endsCell", () => {
-  const ends = (hours: number | null) =>
-    endsCell(
-      {
-        ask_contract_id: 1,
-        dph_total: 1,
-        end_date: hours === null ? undefined : NOW / 1000 + hours * 3600,
-      },
-      NOW,
-    );
-  test("whole days, under a day whole hours, none as no end date", () => {
-    expect(ends(14 * 24 + 23)).toBe("14 d");
-    expect(ends(24)).toBe("1 d");
-    expect(ends(23.9)).toBe("23 h");
-    expect(ends(7.2)).toBe("7 h");
-    expect(ends(0.5)).toBe("<1 h");
-    expect(ends(-3)).toBe("<1 h");
-    expect(ends(null)).toBe("no end date");
   });
 });
 

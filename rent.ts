@@ -249,6 +249,7 @@ async function cardOf(
   const cpus = await cpuScores(deps.get, now);
   const links = hasLinks(deps);
   const cells = hasCells(deps);
+  const marks = cells ? offers.map((offer) => cellsOf(offer, links)) : [];
   return {
     title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: COLUMNS,
@@ -256,8 +257,8 @@ async function cardOf(
     ...(links ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
     ...(cells
       ? {
-          titles: offers.map((offer) => cellsOf(offer, links).titles),
-          cellKinds: offers.map((offer) => cellsOf(offer, links).kinds),
+          titles: marks.map((mark) => mark.titles),
+          cellKinds: marks.map((mark) => mark.kinds),
         }
       : {}),
     action: "Rent",
