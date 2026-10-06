@@ -138,6 +138,20 @@ export type ExtensionPick = {
    * refuses the field.
    */
   links?: (string | null)[][];
+  /**
+   * Hover text for each cell: one string or null per cell, the same shape as
+   * `rows`. Only on a prifly whose `features` include "pick-cells": an older
+   * one refuses the field.
+   */
+  titles?: (string | null)[][];
+  /**
+   * How each cell is drawn, the same shape as `rows`: "flag" draws the cell's
+   * text (an ISO 3166-1 alpha-2 country code) as that country's flag, "link-icon"
+   * draws an icon that opens the cell's `links` URL, null is plain text. The
+   * cell's text stays what a screen reader and an older prifly show. Only on a
+   * prifly whose `features` include "pick-cells": an older one refuses the field.
+   */
+  cellKinds?: ("flag" | "link-icon" | null)[][];
   /** The button's word, default "Choose". */
   action?: string;
   amount?: PickAmount;
@@ -182,7 +196,7 @@ export type ExtensionVaultApi = {
 };
 
 export type ExtensionApi = {
-  /** What this prifly host can do beyond the base contract: "pick-amount-limit", "pick-links". Absent on an older one. */
+  /** What this prifly host can do beyond the base contract: "pick-amount-limit", "pick-links", "pick-cells". Absent on an older one. */
   features?: readonly string[];
   /**
    * The vault's API tokens this extension's manifest names under `vault`.

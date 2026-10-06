@@ -46,6 +46,20 @@ export function hasLinks(deps: ToolDeps): boolean {
   return deps.features.includes("pick-links");
 }
 
+/** Whether this prifly's pick card takes `titles` and `cellKinds`. */
+export function hasCells(deps: ToolDeps): boolean {
+  return deps.features.includes("pick-cells");
+}
+
+/**
+ * The rate on the rent card: "0.45", three decimals under $0.10 so a cheap
+ * box's rate is not rounded away. It stays a number: prifly divides the
+ * budget by this cell for the Hours column.
+ */
+export function cardRate(rate: number): string {
+  return rate.toFixed(rate < 0.1 ? 3 : 2);
+}
+
 /** The account's credit and what is committed on it, without `except`; null when Vast.ai does not say. */
 export async function creditNow(
   deps: ToolDeps,

@@ -52,11 +52,10 @@ const SHORT_WORDS: Record<string, string> = {
   SILVER: "Silver",
   BRONZE: "Bronze",
   RYZEN: "Ryzen",
-  THREADRIPPER: "Threadripper",
   CORE: "Core",
 };
 
-/** A CPU name for a table cell: "XEON® PLATINUM 8563C" → "Xeon Plat. 8563C", "AMD EPYC 7742 64-Core Processor" → "EPYC 7742". */
+/** A CPU name for a table cell: "XEON® PLATINUM 8563C" → "Xeon Plat. 8563C", "AMD EPYC 7742 64-Core Processor" → "EPYC 7742", "Ryzen Threadripper PRO 5975WX" → "TR PRO 5975WX". */
 export function shortCpuName(name: string): string {
   return name
     .replace(/[®™]|\((?:r|tm)\)/gi, "")
@@ -64,6 +63,7 @@ export function shortCpuName(name: string): string {
     .replace(/\bCPU\s*$/i, "")
     .replace(/\b\d+-cores?\b/gi, "")
     .replace(/\bprocessor\b/gi, "")
+    .replace(/\b(?:ryzen\s+)?threadripper\b/gi, "TR")
     .split(/\s+/)
     .filter((word) => word !== "" && !/^(?:intel|amd|cpu)$/i.test(word))
     .map((word) => SHORT_WORDS[word] ?? word)

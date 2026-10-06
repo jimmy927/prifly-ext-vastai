@@ -271,16 +271,26 @@ its end. The extension now checks every booking against the credit.
   whose `api.features` include `pick-amount-limit`. On an older one, the
   breakdown goes in the hint, and a budget past it is asked about again on a
   second card.
-- **Performance on the card.** Each offer on `vast_rent`'s card (and each line
-  of `vast_offers`) shows its GPU perf (Vast's `dlperf` for the whole rental)
-  and GPU perf per $/h, memory bandwidth, the CPU with its CPU perf and CPU
-  perf per $/h, download speed and whether Vast has verified the host. CPU
-  perf is PassMark's multithread CPU Mark of the chip, divided by the chip's
-  threads and multiplied by the threads rented; a chip with no PassMark entry
-  or no known thread count shows "unscored". The marks are read from
-  cpubenchmark.net once a day; if that fails every chip is unscored and the
-  rent goes on. On a prifly whose `api.features` include `pick-links`, the GPU
-  and CPU names link to their PassMark pages.
+- **Performance on the card.** Each offer on `vast_rent`'s card is one compact
+  row: GPU, VRAM, GPU perf · per $/h, memory GB/s, CPU, CPU perf · per $/h,
+  RAM, disk, Mbps, $/h, Hours, Ends in, Rel., Verified, Where, Offer
+  (`vast_offers` lists the same facts as text). GPU perf is Vast's `dlperf` for
+  the whole rental; CPU perf is PassMark's multithread CPU Mark of the chip,
+  divided by the chip's threads and multiplied by the threads rented, and a
+  chip with no PassMark entry or no known thread count shows "–". Each is
+  followed by its value per $/h ("97 · 214", "18.7k · 41.4k"). The marks are
+  read from cpubenchmark.net once a day; if that fails every chip is unscored
+  and the rent goes on. $/h has two decimals (three under $0.10) and stays a
+  plain number: the Hours column is the budget divided by it. Ends in is whole
+  days ("14 d"), under a day hours ("7 h"), or "no end date". Where is the
+  country code at the end of Vast's location. On a prifly whose
+  `api.features` include `pick-links`, the GPU and CPU names link to their
+  PassMark pages and the Offer id links to
+  `https://cloud.vast.ai/?ask=<offer id>` (unverified: Vast's console is a
+  single-page app). With `pick-cells` the country shows as a flag with the
+  place spelled out on hover ("British Columbia, Canada") and, with
+  `pick-links` too, the offer as a link icon with the hover "Offer <id> on
+  Vast.ai"; without it Where is Vast's full location text and Offer the id.
 - **While boxes run.** Each minute the runway (the credit ÷ the account's
   burn) is checked. Under each of `warnHours` you are told once, on the
   sessions whose boxes bill, or in the status bar when none of this prifly's

@@ -27,11 +27,13 @@ import {
   updateLeases,
 } from "./leases";
 import {
+  endsCell,
   endsTooSoon,
   fetchOffer,
   gpuCell,
   type Offer,
   perfCells,
+  placeOf,
   timeLeft,
   vramCell,
 } from "./offers";
@@ -40,6 +42,7 @@ import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
 import {
   type CreditGuard,
+  cardRate,
   confirmOver,
   creditGuard,
   creditNow,
@@ -47,6 +50,7 @@ import {
   endText,
   guardedAmount,
   HOUR_MS,
+  hasCells,
   hasLimit,
   hasLinks,
   NAME,
@@ -134,63 +138,92 @@ function hintOf(purpose: string): string {
 const COLUMNS = [
   "GPU",
   "VRAM",
-  "GPU perf",
-  "GPU perf / $/h",
+  "GPU perf · /$",
   "Mem GB/s",
   "CPU",
-  "CPU perf",
-  "CPU perf / $/h",
+  "CPU perf · /$",
   "RAM",
   "Disk",
-  "Down Mbps",
+  "Mbps",
   "$/h",
   "Hours",
   "Ends in",
-  "Reliability",
+  "Rel.",
   "Verified",
-  "Location",
+  "Where",
   "Offer",
 ];
-/** The columns whose cells link to PassMark. */
-const GPU_COLUMN = COLUMNS.indexOf("GPU");
-const CPU_COLUMN = COLUMNS.indexOf("CPU");
+const col = (name: string) => COLUMNS.indexOf(name);
+const GPU_COLUMN = col("GPU");
+const CPU_COLUMN = col("CPU");
+const WHERE_COLUMN = col("Where");
+const OFFER_COLUMN = col("Offer");
+
+/** Vast's console, on one offer. Unverified: the console is a single-page app and may ignore `ask`. */
+function offerUrl(offer: Offer): string {
+  return `https://cloud.vast.ai/?ask=${offer.ask_contract_id}`;
+}
 
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
 export function runHours(offer: Offer, budget: number): number {
   return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
 }
 
-function rowOf(offer: Offer, budget: number, now: number, cpus: CpuIndex): string[] {
+/** One card row. `flags`: the Where cell is the bare country code, which a prifly with "pick-cells" draws as a flag. */
+function rowOf(
+  offer: Offer,
+  budget: number,
+  now: number,
+  cpus: CpuIndex,
+  flags: boolean,
+): string[] {
   const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
   const perf = perfCells(offer, cpus);
+  const place = placeOf(offer.geolocation);
   return [
     gpuCell(offer),
     vramCell(offer),
-    perf.gpuPerf,
-    perf.gpuPerDollar,
+    perf.gpuPerf === "?" ? "–" : `${perf.gpuPerf} · ${perf.gpuPerDollar}`,
     perf.memBandwidth,
     perf.cpu,
-    perf.cpuPerf,
-    perf.cpuPerDollar,
+    perf.cpuPerf === "unscored" ? "–" : `${perf.cpuPerf} · ${perf.cpuPerDollar}`,
     gb(offer.cpu_ram),
     `${Math.round(offer.disk_space ?? 0)} GB`,
     perf.down,
-    rateCell(offer.dph_total),
+    cardRate(offer.dph_total),
     (budget / offer.dph_total).toFixed(1),
-    timeLeft(offer, now) ?? "no end date",
+    endsCell(offer, now),
     (offer.reliability ?? 0).toFixed(3),
     perf.verified,
-    offer.geolocation ?? "?",
+    flags && place.code !== null ? place.code : place.text,
     String(offer.ask_contract_id),
   ];
 }
 
-/** One link or null per cell: the GPU and CPU names to their PassMark pages. */
+/** One link or null per cell: the GPU and CPU names to their PassMark pages, and the offer to Vast's console. */
 function linksOf(offer: Offer, cpus: CpuIndex): (string | null)[] {
   const links: (string | null)[] = COLUMNS.map(() => null);
   links[GPU_COLUMN] = gpuLink(offer.gpu_name);
   links[CPU_COLUMN] = cpuLink(offer, cpus);
+  links[OFFER_COLUMN] = offerUrl(offer);
   return links;
+}
+
+/** Hover text and how to draw the cells that are not plain text: the country as a flag, the offer as a link icon (when its link is sent). */
+function cellsOf(
+  offer: Offer,
+  offerLink: boolean,
+): { titles: (string | null)[]; kinds: ("flag" | "link-icon" | null)[] } {
+  const titles: (string | null)[] = COLUMNS.map(() => null);
+  const kinds: ("flag" | "link-icon" | null)[] = COLUMNS.map(() => null);
+  const place = placeOf(offer.geolocation);
+  if (place.code !== null) {
+    titles[WHERE_COLUMN] = place.full;
+    kinds[WHERE_COLUMN] = "flag";
+  }
+  titles[OFFER_COLUMN] = `Offer ${offer.ask_contract_id} on Vast.ai`;
+  if (offerLink) kinds[OFFER_COLUMN] = "link-icon";
+  return { titles, kinds };
 }
 
 /** Today's offers for the ids, in the session's order, without those gone, too dear for an hour or ending before the budget runs out. */
@@ -214,11 +247,19 @@ async function cardOf(
 ): Promise<ExtensionPick> {
   const now = deps.now();
   const cpus = await cpuScores(deps.get, now);
+  const links = hasLinks(deps);
+  const cells = hasCells(deps);
   return {
     title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: COLUMNS,
-    rows: offers.map((offer) => rowOf(offer, args.budget, now, cpus)),
-    ...(hasLinks(deps) ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
+    rows: offers.map((offer) => rowOf(offer, args.budget, now, cpus, cells)),
+    ...(links ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
+    ...(cells
+      ? {
+          titles: offers.map((offer) => cellsOf(offer, links).titles),
+          cellKinds: offers.map((offer) => cellsOf(offer, links).kinds),
+        }
+      : {}),
     action: "Rent",
     amount: {
       label: "Budget for this rental",

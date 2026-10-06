@@ -193,11 +193,51 @@ export function vramCell(offer: Offer): string {
   return gpus > 1 ? `${gpus} × ${each} GB` : `${each} GB`;
 }
 
-/** The GPU for a card: "8x RTX PRO 6000 S", "2x RTX 4090 · 2 of 4 GPUs" when the offer is part of the machine. */
+/** The GPU for a card: "8x RTX PRO 6000 S", "2x RTX 4090 · 2 of 4" when the offer is part of the machine. */
 export function gpuCell(offer: Offer): string {
   const gpus = (offer.num_gpus ?? 1) > 1 ? `${offer.num_gpus}x ` : "";
   const part = offer.gpu_frac !== undefined && offer.gpu_frac > 0 && offer.gpu_frac < 1;
-  return `${gpus}${offer.gpu_name ?? "?"}${part ? ` · ${shareText(offer)}` : ""}`;
+  return `${gpus}${offer.gpu_name ?? "?"}${part ? ` · ${shareText(offer).replace(/ GPUs$/, "")}` : ""}`;
+}
+
+/** The card's "Ends in": whole days "14 d", under a day whole hours "7 h", under an hour "<1 h", "no end date". */
+export function endsCell(offer: Offer, nowMs: number): string {
+  if (offer.end_date == null) return "no end date";
+  const hours = Math.max(0, Math.floor((offer.end_date * 1000 - nowMs) / 3_600_000));
+  if (hours >= 24) return `${Math.floor(hours / 24)} d`;
+  return hours >= 1 ? `${hours} h` : "<1 h";
+}
+
+/** Where an offer is: the ISO 3166-1 alpha-2 code Vast ends its `geolocation` with, and the place spelled out. */
+export type Place = {
+  /** "NO"; null when `geolocation` carries none. */
+  code: string | null;
+  /** The cell without a flag: Vast's text as it is ("Norway, NO"), "?" when there is none. */
+  text: string;
+  /** The hover text: "Norway", "British Columbia, Canada"; null when there is no code to spell out. */
+  full: string | null;
+};
+
+const REGIONS = new Intl.DisplayNames(["en"], { type: "region", fallback: "code" });
+
+/** Read an offer's `geolocation`: "Norway, NO" → code NO, place "Norway". */
+export function placeOf(geolocation: string | null | undefined): Place {
+  const text = geolocation?.trim() ?? "";
+  if (text === "") return { code: null, text: "?", full: null };
+  const parts = text.split(",").map((part) => part.trim());
+  const code = parts.pop() ?? "";
+  const none = { code: null, text, full: null };
+  if (!/^[A-Z]{2}$/.test(code)) return none;
+  let country: string | undefined;
+  try {
+    country = REGIONS.of(code);
+  } catch {
+    return none;
+  }
+  // An unknown code comes back as itself, ZZ as "Unknown Region": there is no country to spell out.
+  if (country === undefined || country === code || country === "Unknown Region") return none;
+  const area = parts.filter((part) => part !== "").join(", ");
+  return { code, text, full: area === "" || area === country ? country : `${area}, ${country}` };
 }
 
 const VERIFICATION: Readonly<Record<string, string>> = {
