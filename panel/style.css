@@ -1,0 +1,273 @@
+/* The window's own tokens arrive in a `prifly-look` message (app.js) and
+   override these; these are what the page wears until then. Series colours
+   are prifly-ext-token-stats' palette. */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #16181d;
+  --card: #ffffff;
+  --muted: #f3f4f6;
+  --muted-fg: #6b7280;
+  --border: #e3e5e9;
+  --accent: #eef0f3;
+  --grid: #eef0f3;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --s0: #2a78d6;
+  --s1: #eb6834;
+  --s2: #1baf7a;
+  --s3: #eda100;
+  --s4: #e87ba4;
+  --s5: #008300;
+  --s6: #4a3aa7;
+  --s7: #e34948;
+  --other: #b4b8bf;
+  --crit: #e34948;
+  --warn: #c98500;
+  --now: #1baf7a;
+}
+:root.dark {
+  color-scheme: dark;
+  --bg: #111317;
+  --fg: #eceef2;
+  --card: #16191e;
+  --muted: #1d2127;
+  --muted-fg: #9097a2;
+  --border: #2a2f37;
+  --accent: #222730;
+  --grid: #20252c;
+  --s0: #3987e5;
+  --s1: #d95926;
+  --s2: #199e70;
+  --s3: #c98500;
+  --s4: #d55181;
+  --s5: #2f9e2f;
+  --s6: #7b6be0;
+  --s7: #e05656;
+  --other: #5b6170;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px / 1.4 var(--font);
+}
+.app {
+  padding: 14px 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.bar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.bar h1 {
+  font-size: 15px;
+  margin: 0 8px 0 0;
+}
+.group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+}
+.group button,
+button.plain {
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+button.plain {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.group button + button {
+  border-left: 1px solid var(--border);
+}
+.group button.on {
+  background: var(--accent);
+  font-weight: 600;
+}
+.lbl {
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+.grow {
+  flex: 1;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.tile,
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+.tile {
+  padding: 10px 12px;
+}
+.tile .k,
+.tile .s {
+  color: var(--muted-fg);
+  font-size: 12px;
+}
+.tile .s {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile .v {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.card {
+  padding: 12px 14px;
+  min-width: 0;
+}
+.card h2 {
+  font-size: 13px;
+  margin: 0 0 2px;
+}
+.card .sub {
+  color: var(--muted-fg);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.cols {
+  display: grid;
+  grid-template-columns: 430px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.burn-row {
+  display: grid;
+  grid-template-columns: 150px 1fr 70px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.burn-row .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.burn-row .name small {
+  display: block;
+  color: var(--muted-fg);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.burn-row .track {
+  display: flex;
+  height: 18px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--muted);
+}
+.burn-row .seg {
+  height: 100%;
+  border-right: 1px solid var(--card);
+}
+.burn-row .amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.burn-row.sel {
+  background: var(--accent);
+  border-radius: 4px;
+}
+.burn-row.dim {
+  opacity: 0.45;
+}
+.burn-row.quiet .name {
+  color: var(--muted-fg);
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted-fg);
+  font-size: 12px;
+  margin-top: 8px;
+}
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.legend [data-k] {
+  cursor: pointer;
+}
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+svg text {
+  fill: var(--fg);
+  font: 11px var(--font);
+}
+svg .muted {
+  fill: var(--muted-fg);
+}
+svg .head {
+  font-weight: 600;
+  font-size: 12px;
+}
+.tip {
+  position: fixed;
+  pointer-events: none;
+  background: var(--fg);
+  color: var(--bg);
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  max-width: 360px;
+  display: none;
+  z-index: 10;
+  white-space: pre-line;
+}
+.note {
+  color: var(--muted-fg);
+  font-size: 12px;
+  background: var(--muted);
+  border-radius: 5px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+.note.bad {
+  color: var(--crit);
+}
+.empty {
+  color: var(--muted-fg);
+  padding: 36px;
+  text-align: center;
+}

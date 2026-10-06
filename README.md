@@ -24,6 +24,16 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
   `curl -X PUT|POST|DELETE` to console.vast.ai, and names the tool to use.
 - **Teaches sessions the rules.** Every session prifly runs learns how to rent
   without surprise bills.
+- **Shows where the money went.** **Vast.ai spend** in the status bar opens a
+  panel. It has three parts:
+  - What the account spent per day or week, stacked by session or repository.
+    The amounts are Vast.ai's own charges, fetched one UTC day at a time and
+    kept in `charges.json`.
+  - Who spent it, sorted by dollars, one segment per box.
+  - A timeline of every box: when it started, each extension of its lease,
+    the lease's end, and how it ended. This comes from the boxes' history in
+    `events.jsonl`. On first run, the history is seeded from what prifly's log
+    still holds, so it starts about two days back.
 
 Everything it needs comes with it: the tools, the hook, the skill and the
 instructions. There is no CLI and no Python. Your only step is storing a
@@ -708,4 +718,7 @@ prompt, or your skill.
 | `skills/vastai/SKILL.md` | The Claude Code skill: money and budgets, the tools, cleanup, choosing offers, the ssh traps |
 | `.claude-plugin/plugin.json`, `marketplace.json` | Makes the folder a Claude Code plugin, and installable without prifly |
 | `owner.ts` | The label owner, from `config.json` or `$USER`, for the extension and its tools alike |
+| `events.ts`, `timeline.ts` | The boxes' history (`events.jsonl`): rents, extensions, cancels, destroys, boxes appearing and going; folded into the timeline |
+| `charges.ts` | What each box cost per UTC day, from `GET /api/v0/charges/`, cached in `charges.json` |
+| `spend-panel.ts`, `repo.ts`, `panel/` | The spend panel: its `api/data` answer (groups by session and repository) and its page |
 | `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, `owner` (else `$USER`), `credit` |

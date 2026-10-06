@@ -343,7 +343,12 @@ async function applyExtension(
         : raiseBudget(leases, target, confirmed);
     return allowed > 0 ? extend(raised.leases, target, allowed, now) : raised;
   });
-  deps.log("extended", { instance: box.id ?? 0, until: next.until, by: "session" });
+  deps.log("extended", {
+    instance: box.id ?? 0,
+    until: next.until,
+    budget: next.budget,
+    by: "session",
+  });
   deps.refresh();
   const cost = budget === null ? "" : `, budget ${budgetText(budget)}`;
   const note = limitNote({ box, hours, from, end, hostCap, budgetLimited: budget !== null }, now);
@@ -393,6 +398,7 @@ function cancelTool(deps: ToolDeps): ExtensionTool {
       const leases = await readLeases(path);
       const label = leaseLabel(leases, owner, ctx.session, args.name);
       const lease = await updateLeases(path, (current) => cancel(current, { label }));
+      if (lease.box !== null) deps.log("cancelled", { instance: lease.box, label });
       deps.refresh();
       return lease.box === null
         ? `Dropped the booking for ${args.name}.`
