@@ -364,7 +364,7 @@ async function tryOffer(
     const box = await withKeys(await deps.keys(), (key) =>
       createInstance(key, id, request, deps.get),
     );
-    deps.log("rented", { offer: id, instance: box, label, budget });
+    deps.log("rented", { offer: id, instance: box, label, budget, until, rate: fresh.dph_total });
     return { id: box, until, request };
   } catch (caught) {
     if (caught instanceof OfferGone) {

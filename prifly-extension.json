@@ -2,10 +2,20 @@
   "id": "vastai",
   "name": "Vast.ai boxes",
   "description": "Each rented Vast.ai box on the session that rented it; sessions rent through tools that ask you for a budget, and a hook refuses the CLI.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "main": "index.ts",
   "prompt": "prompt.md",
   "vault": ["vastai"],
+  "panels": [
+    {
+      "id": "spend",
+      "label": "Vast.ai spend",
+      "icon": "dollar",
+      "description": "What your Vast.ai boxes cost per day or week, by session or repository, and each box's lease on a timeline",
+      "folder": "panel",
+      "page": "index.html"
+    }
+  ],
   "menu": [
     {
       "id": "rent",

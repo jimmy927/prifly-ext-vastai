@@ -89,7 +89,14 @@ async function tryNext(
   );
   const box = await create(deps, { id, label, state }, notes);
   if (box === null) return null;
-  deps.log("replacement_rented", { offer: id, instance: box, label, budget: rest });
+  deps.log("replacement_rented", {
+    offer: id,
+    instance: box,
+    label,
+    budget: rest,
+    until: now + hours * 3_600_000,
+    rate: offer.dph_total,
+  });
   const listed = (await listInstances(await deps.keys(), deps.get)).find((b) => b.id === box);
   const ssh = listed === undefined ? null : sshText(listed, deps.sshKey);
   return { kind: "rented", box, offer, budget: Number(rest.toFixed(2)), ssh };

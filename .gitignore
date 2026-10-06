@@ -1,5 +1,7 @@
 config.json
 leases.json*
+events.jsonl
+charges.json
 skills/*-local/
 .venv/
 node_modules/

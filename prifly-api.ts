@@ -228,6 +228,22 @@ export type ExtensionApi = {
   paths: readonly string[];
 };
 
+/**
+ * A request from one of the extension's own windows (`panels` in the
+ * manifest): the page fetched `api/<path>` beside itself. `query` is the
+ * URL's query; `body` a POST's JSON, or null.
+ */
+export type PanelRequest = {
+  path: string;
+  query: Record<string, string>;
+  body: unknown;
+};
+
 export type ExtensionModule = {
   activate: (api: ExtensionApi) => (() => void) | undefined | Promise<(() => void) | undefined>;
+  /**
+   * What one of its windows asks for: `panelId` names the manifest's panel.
+   * Answered as JSON; a throw becomes a 500 whose body is `{ error }`.
+   */
+  panel?: (panelId: string, request: PanelRequest) => unknown;
 };

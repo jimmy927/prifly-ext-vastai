@@ -33,8 +33,17 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ChargeCache, chargesPath, fetchDay } from "./charges";
 import { CREDIT_DEFAULTS, type CreditConfig } from "./credit";
 import { Enforcer, type Judged } from "./enforce";
+import {
+  eventsPath,
+  hostLogFolder,
+  Observer,
+  recorder,
+  seedFromHostLog,
+  withRecorder,
+} from "./events";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
 import { cardLoad, GpuHold } from "./load";
 import {
@@ -46,9 +55,10 @@ import {
   statusOf,
 } from "./machine-card";
 import { readOwner } from "./owner";
-import type { Decoration, ExtensionApi, ExtensionMachine } from "./prifly-api";
+import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
 import { parseLabel } from "./rules";
 import { sshCommand, sshTarget } from "./run";
+import { answer, type PanelDeps } from "./spend-panel";
 import { makeTools } from "./tools";
 import {
   destroyInstance,
@@ -72,12 +82,44 @@ type Config = {
   credit: CreditConfig;
 };
 
-export async function activate(api: ExtensionApi): Promise<() => void> {
+/** What the spend panel reads, while the extension runs. */
+let panelDeps: PanelDeps | null = null;
+
+/** The spend panel's requests (`panel/`, manifest `panels`): `spend-panel.ts`. */
+export function panel(_panelId: string, request: PanelRequest): Promise<unknown> {
+  if (panelDeps === null) throw new Error("The Vast.ai extension is not running.");
+  return answer(panelDeps, request);
+}
+
+export async function activate(rawApi: ExtensionApi): Promise<() => void> {
+  // Every event the extension logs is written to the boxes' history too (`events.ts`).
+  const history = eventsPath(rawApi.folder);
+  const api = withRecorder(
+    rawApi,
+    recorder(history, (e, f) => rawApi.log(e, f)),
+  );
+  await seedFromHostLog(history, hostLogFolder(api.folder), "vastai").catch((caught: unknown) =>
+    api.log("history_seed_failed", {
+      message: caught instanceof Error ? caught.message : String(caught),
+    }),
+  );
+  const observer = new Observer(history);
   const config = await readConfig(api.folder);
   // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
   const keys = () => readApiKeys(process.env, homedir(), api.vault);
   const enforcer = new Enforcer(api, config);
   const labels = new Map<number, string>();
+  let listed: readonly Instance[] = [];
+  panelDeps = {
+    folder: api.folder,
+    owner: config.owner,
+    sessions: () => api.sessions(),
+    charges: new ChargeCache(chargesPath(api.folder), async (day) =>
+      withKeys(await keys(), (key) => fetchDay(key, day)),
+    ),
+    listed: () => listed,
+    now: Date.now,
+  };
   // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
   const gpuHold = new GpuHold();
   let stopped = false;
@@ -110,6 +152,12 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
     try {
       const boxes = await listInstances(await keys());
       const now = Date.now();
+      listed = boxes;
+      await observer.observe(boxes, now).catch((caught: unknown) =>
+        api.log("history_write_failed", {
+          message: caught instanceof Error ? caught.message : String(caught),
+        }),
+      );
       const judged = await enforcer.round(boxes, now);
       const leases = await readLeases(leasesPath(api.folder));
       const credit = await readCredit(boxes, leases, now);
@@ -164,7 +212,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
     }
     // "Destroy box…": prifly has already asked the reader.
     await withKeys(await keys(), (apiKey) => destroyInstance(apiKey, id));
-    api.log("destroyed", { instance: key });
+    api.log("destroyed", { instance: id, reason: "destroyed from its menu", by: "reader" });
     void refresh();
     return `Destroyed Vast.ai box #${key}; it no longer bills.`;
   });
@@ -172,6 +220,7 @@ export async function activate(api: ExtensionApi): Promise<() => void> {
   const timer = setInterval(() => void refresh(), config.refreshSeconds * 1000);
   return () => {
     stopped = true;
+    panelDeps = null;
     enforcer.stop();
     clearInterval(timer);
   };

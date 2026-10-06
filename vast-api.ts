@@ -196,7 +196,7 @@ async function fetchPage(key: string, after: string | null, get: Fetch): Promise
 }
 
 /** The error for a refused request: what Vast.ai said in `msg`, never the key. */
-async function failure(what: string, response: Response): Promise<Error> {
+export async function failure(what: string, response: Response): Promise<Error> {
   const why = z.object({ msg: z.string() }).safeParse(await response.json().catch(() => null));
   const message = `Vast.ai ${what} failed (${response.status})${why.success ? `: ${why.data.msg.slice(0, 200)}` : ""}`;
   return response.status === 401 || response.status === 403
@@ -225,7 +225,7 @@ export async function getAccount(key: string, get: Fetch = fetch): Promise<Accou
   return { credit, threshold: on === false ? null : (threshold ?? null) };
 }
 
-function authorized(key: string, method: string, json?: unknown): RequestInit {
+export function authorized(key: string, method: string, json?: unknown): RequestInit {
   return {
     method,
     headers: {
