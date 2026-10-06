@@ -41,6 +41,11 @@ export function hasLimit(deps: ToolDeps): boolean {
   return deps.features.includes("pick-amount-limit");
 }
 
+/** Whether this prifly's pick card takes `links`. */
+export function hasLinks(deps: ToolDeps): boolean {
+  return deps.features.includes("pick-links");
+}
+
 /** The account's credit and what is committed on it, without `except`; null when Vast.ai does not say. */
 export async function creditNow(
   deps: ToolDeps,

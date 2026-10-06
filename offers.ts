@@ -10,6 +10,7 @@
  */
 
 import { z } from "zod";
+import { type CpuIndex, compact, cpuPerf, shortCpuName } from "./cpu-score";
 import { type Fetch, field, SERVER, text } from "./vast-api";
 
 const BUNDLES_URL = `${SERVER}/api/v0/bundles/`;
@@ -42,6 +43,17 @@ export const OfferSchema = z.object({
   geolocation: field(text.nullable()),
   /** Mbps. */
   inet_down: field(z.number()),
+  /** Vast's score for the whole rental's GPUs. */
+  dlperf: field(z.number()),
+  total_flops: field(z.number()),
+  /** GB/s, one GPU's memory. */
+  gpu_mem_bw: field(z.number()),
+  /** The host's CPU as the host names it: "XEON® PLATINUM 8563C". */
+  cpu_name: field(text),
+  /** The whole machine's threads; `cpu_cores_effective` is the offer's. */
+  cpu_cores: field(z.number()),
+  /** "verified", "unverified" or "deverified". */
+  verification: field(text),
   rentable: field(z.boolean()),
   /** Epoch seconds: the host's end date; Vast stops a rented box then. */
   end_date: field(z.number()),
@@ -171,6 +183,49 @@ export function shareText(offer: Offer): string {
   if (frac >= 1) return "whole machine";
   const gpus = offer.num_gpus ?? 1;
   return `${gpus} of ${Math.round(gpus / frac)} GPUs`;
+}
+
+/** The VRAM for a card: "8 × 98 GB", "24 GB". */
+export function vramCell(offer: Offer): string {
+  if (offer.gpu_ram === undefined) return "?";
+  const gpus = offer.num_gpus ?? 1;
+  const each = Math.round(offer.gpu_ram / 1000);
+  return gpus > 1 ? `${gpus} × ${each} GB` : `${each} GB`;
+}
+
+/** The GPU for a card: "8x RTX PRO 6000 S", "2x RTX 4090 · 2 of 4 GPUs" when the offer is part of the machine. */
+export function gpuCell(offer: Offer): string {
+  const gpus = (offer.num_gpus ?? 1) > 1 ? `${offer.num_gpus}x ` : "";
+  const part = offer.gpu_frac !== undefined && offer.gpu_frac > 0 && offer.gpu_frac < 1;
+  return `${gpus}${offer.gpu_name ?? "?"}${part ? ` · ${shareText(offer)}` : ""}`;
+}
+
+const VERIFICATION: Readonly<Record<string, string>> = {
+  verified: "yes",
+  deverified: "lost",
+  unverified: "no",
+};
+
+/** `value` per dollar an hour at the offer's rate as the card shows it (disk included), or "–" with no value. */
+function perDollar(value: number | null, offer: Offer, show: (n: number) => string): string {
+  return value === null ? "–" : show(value / offer.dph_total);
+}
+
+/** The cells the card and the offer list share: GPU and CPU performance, each per $/h, memory bandwidth, download speed, verification. */
+export function perfCells(offer: Offer, cpus: CpuIndex) {
+  const gpuPerf = offer.dlperf ?? null;
+  const cpu = cpuPerf(offer, cpus);
+  const whole = (n: number | undefined) => (n === undefined ? "?" : String(Math.round(n)));
+  return {
+    gpuPerf: whole(gpuPerf ?? undefined),
+    gpuPerDollar: perDollar(gpuPerf, offer, (n) => String(Math.round(n))),
+    memBandwidth: whole(offer.gpu_mem_bw),
+    cpu: `${Math.round(offer.cpu_cores_effective ?? 0)} × ${offer.cpu_name === undefined ? "?" : shortCpuName(offer.cpu_name)}`,
+    cpuPerf: cpu === null ? "unscored" : compact(cpu),
+    cpuPerDollar: perDollar(cpu, offer, compact),
+    down: whole(offer.inet_down),
+    verified: VERIFICATION[offer.verification ?? ""] ?? "?",
+  };
 }
 
 /** The cheapest offers that pass the filters, cheapest first, at most `limit`. */

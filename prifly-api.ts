@@ -132,6 +132,12 @@ export type ExtensionPick = {
   title: string;
   columns: string[];
   rows: string[][];
+  /**
+   * A link for each cell: one URL or null per cell, the same shape as `rows`.
+   * Only on a prifly whose `features` include "pick-links": an older one
+   * refuses the field.
+   */
+  links?: (string | null)[][];
   /** The button's word, default "Choose". */
   action?: string;
   amount?: PickAmount;
@@ -176,7 +182,7 @@ export type ExtensionVaultApi = {
 };
 
 export type ExtensionApi = {
-  /** What this prifly host can do beyond the base contract: "pick-amount-limit". Absent on an older one. */
+  /** What this prifly host can do beyond the base contract: "pick-amount-limit", "pick-links". Absent on an older one. */
   features?: readonly string[];
   /**
    * The vault's API tokens this extension's manifest names under `vault`.

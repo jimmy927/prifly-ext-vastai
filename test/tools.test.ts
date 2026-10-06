@@ -88,24 +88,12 @@ describe("vast_rent", () => {
     await Bun.sleep(10);
     expect(leasesAtPick).toBe(0);
     const card = cards[0];
-    expect(card?.columns).toEqual([
-      "GPU",
-      "Share",
-      "VRAM",
-      "CPU",
-      "RAM",
-      "Disk",
-      "$/h",
-      "Hours",
-      "Ends in",
-      "Reliability",
-      "Location",
-      "Offer",
-    ]);
+    // The full column list is checked in offer-cards.test.ts.
+    expect(card?.columns).toHaveLength(18);
     expect(card?.action).toBe("Rent");
-    expect(card?.rows.map((r) => r[11])).toEqual(["101", "102"]);
-    expect(card?.rows[0]?.[6]).toBe("0.500");
-    expect(card?.rows[0]?.[7]).toBe("40.0");
+    expect(card?.rows.map((r) => r[17])).toEqual(["101", "102"]);
+    expect(card?.rows[0]?.[11]).toBe("0.500");
+    expect(card?.rows[0]?.[12]).toBe("40.0");
     expect(card?.amount).toEqual({
       label: "Budget for this rental",
       prefix: "$",
@@ -122,7 +110,7 @@ describe("vast_rent", () => {
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
     await tool("vast_rent").call(RENT, ctx);
     // 102 is not on the market any more; 103 costs 25 an hour against a budget of 20.
-    expect(cards[0]?.rows.map((r) => r[11])).toEqual(["101"]);
+    expect(cards[0]?.rows.map((r) => r[17])).toEqual(["101"]);
   });
 
   test("when every offer ends too soon it says so and books nothing", async () => {
@@ -288,8 +276,8 @@ describe("vast_rent card", () => {
     const { tool } = await setup(fake);
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
     await tool("vast_rent").call(RENT, ctx);
-    expect(cards[0]?.rows.map((r) => r[11])).toEqual(["102", "103"]);
-    expect(cards[0]?.rows[0]?.[8]).toBe("1 d 6 h");
+    expect(cards[0]?.rows.map((r) => r[17])).toEqual(["102", "103"]);
+    expect(cards[0]?.rows[0]?.[13]).toBe("1 d 6 h");
   });
 
   test("the card says how much of the machine each offer rents, and the VRAM of all its GPUs", async () => {
@@ -301,10 +289,10 @@ describe("vast_rent card", () => {
     const { tool } = await setup(fake);
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
     await tool("vast_rent").call(RENT, ctx);
-    expect(cards[0]?.rows.map((r) => [r[1], r[2]])).toEqual([
-      ["whole machine", "196 GB (2 × 98)"],
-      ["1 of 8 GPUs", "98 GB"],
-      ["?", "25 GB"],
+    expect(cards[0]?.rows.map((r) => [r[0], r[1]])).toEqual([
+      ["2x RTX 4090", "2 × 98 GB"],
+      ["RTX 4090 · 1 of 8 GPUs", "98 GB"],
+      ["RTX 4090", "25 GB"],
     ]);
   });
 });

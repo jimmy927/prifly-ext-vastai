@@ -10,6 +10,7 @@
  */
 
 import { z } from "zod";
+import { cpuScores } from "./cpu-score";
 import { available, RAISE_ACK, runwayHours } from "./credit";
 import {
   cancel,
@@ -23,7 +24,14 @@ import {
   readLeases,
   updateLeases,
 } from "./leases";
-import { endsInText, type OfferFilters, searchOffers, shareText, vramText } from "./offers";
+import {
+  endsInText,
+  type OfferFilters,
+  perfCells,
+  searchOffers,
+  shareText,
+  vramText,
+} from "./offers";
 import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
 import { MAX_REPLACEMENTS } from "./replace";
@@ -119,11 +127,13 @@ function offersTool(deps: ToolDeps): ExtensionTool {
       const offers = await searchOffers(filters, deps.get);
       if (offers.length === 0) return "No offers pass these filters. Loosen one and search again.";
       const now = deps.now();
+      const cpus = await cpuScores(deps.get, now);
       const lines = offers.map((o) => {
         const gpus = (o.num_gpus ?? 1) > 1 ? `${o.num_gpus}x ` : "";
-        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM · ${Math.round(o.cpu_cores_effective ?? 0)} cores · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · ${o.geolocation ?? "?"} · ${Math.round(o.inet_down ?? 0)} Mbps down · ${endsInText(o, now)}`;
+        const perf = perfCells(o, cpus);
+        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM · GPU perf ${perf.gpuPerf} (${perf.gpuPerDollar} per $/h) · ${perf.memBandwidth} GB/s memory · ${perf.cpu} · CPU perf ${perf.cpuPerf} (${perf.cpuPerDollar} per $/h) · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · verified ${perf.verified} · ${o.geolocation ?? "?"} · ${perf.down} Mbps down · ${endsInText(o, now)}`;
       });
-      return `${lines.join("\n")}\n\nRates include the disk. Offers go in a moment: vast_rent looks each up again.`;
+      return `${lines.join("\n")}\n\nRates include the disk; "per $/h" divides by that rate; CPU perf is PassMark scaled to the rented threads ("unscored": no PassMark entry). Offers go in a moment: vast_rent looks each up again.`;
     },
   );
 }

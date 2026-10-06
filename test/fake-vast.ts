@@ -34,6 +34,8 @@ export const offer = (id: number, rate: number, more: Record<string, unknown> = 
   ...more,
 });
 
+const CPU_PAGE = "https://www.cpubenchmark.net/high_end_cpus.html";
+
 type Put = { url: string; body: Record<string, unknown> };
 
 type Creates = Record<number, "ok" | "gone" | "error">;
@@ -45,6 +47,14 @@ export function vast(offers: Offer[], creates: Creates = {}) {
   // The account: plenty of credit unless a test says otherwise; null answers 500.
   const account: { user: Record<string, unknown> | null } = {
     user: { credit: 10_000, balance_threshold: -0.01, balance_threshold_enabled: true },
+  };
+  // PassMark's page: null answers 403; `fetches` holds the User-Agent of each request.
+  const cpuPage: { html: string | null; fetches: string[] } = { html: null, fetches: [] };
+  const passmark = (init: RequestInit) => {
+    cpuPage.fetches.push(String((init.headers as Record<string, string>)["User-Agent"]));
+    return cpuPage.html === null
+      ? new Response("blocked", { status: 403 })
+      : new Response(cpuPage.html);
   };
   const search = (u: URL) => {
     const q = JSON.parse(u.searchParams.get("q") ?? "{}");
@@ -71,7 +81,9 @@ export function vast(offers: Offer[], creates: Creates = {}) {
   };
   const user = () =>
     account.user === null ? new Response("down", { status: 500 }) : Response.json(account.user);
-  const get = async (url: string, init: RequestInit): Promise<Response> => {
+  const get = async (url: string, init: RequestInit): Promise<Response> =>
+    url === CPU_PAGE ? passmark(init) : await vastGet(url, init);
+  const vastGet = async (url: string, init: RequestInit): Promise<Response> => {
     const u = new URL(url);
     const put = init.method === "PUT";
     if (u.pathname === "/api/v0/bundles/") return search(u);
@@ -86,7 +98,7 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     if (url === "https://logs.example/l") return new Response("a\nb\nc\nd");
     return new Response("unexpected", { status: 500 });
   };
-  return { get, puts, instances, account };
+  return { get, puts, instances, account, cpuPage };
 }
 
 export async function setup(fake: ReturnType<typeof vast>, features: readonly string[] = []) {

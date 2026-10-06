@@ -14,7 +14,9 @@
  */
 
 import { z } from "zod";
+import { type CpuIndex, cpuLink, cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
+import { gpuLink } from "./gpu-link";
 import {
   book,
   dropBooking,
@@ -24,7 +26,15 @@ import {
   setReplace,
   updateLeases,
 } from "./leases";
-import { endsTooSoon, fetchOffer, type Offer, shareText, timeLeft, vramText } from "./offers";
+import {
+  endsTooSoon,
+  fetchOffer,
+  gpuCell,
+  type Offer,
+  perfCells,
+  timeLeft,
+  vramCell,
+} from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
@@ -38,6 +48,7 @@ import {
   guardedAmount,
   HOUR_MS,
   hasLimit,
+  hasLinks,
   NAME,
   rateCell,
   sshText,
@@ -122,41 +133,64 @@ function hintOf(purpose: string): string {
 
 const COLUMNS = [
   "GPU",
-  "Share",
   "VRAM",
+  "GPU perf",
+  "GPU perf / $/h",
+  "Mem GB/s",
   "CPU",
+  "CPU perf",
+  "CPU perf / $/h",
   "RAM",
   "Disk",
+  "Down Mbps",
   "$/h",
   "Hours",
   "Ends in",
   "Reliability",
+  "Verified",
   "Location",
   "Offer",
 ];
+/** The columns whose cells link to PassMark. */
+const GPU_COLUMN = COLUMNS.indexOf("GPU");
+const CPU_COLUMN = COLUMNS.indexOf("CPU");
 
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
 export function runHours(offer: Offer, budget: number): number {
   return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
 }
 
-function rowOf(offer: Offer, budget: number, now: number): string[] {
-  const gpus = (offer.num_gpus ?? 1) > 1 ? `${offer.num_gpus}x ` : "";
+function rowOf(offer: Offer, budget: number, now: number, cpus: CpuIndex): string[] {
   const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
+  const perf = perfCells(offer, cpus);
   return [
-    `${gpus}${offer.gpu_name ?? "?"}`,
-    shareText(offer),
-    vramText(offer),
-    `${Math.round(offer.cpu_cores_effective ?? 0)} cores`,
+    gpuCell(offer),
+    vramCell(offer),
+    perf.gpuPerf,
+    perf.gpuPerDollar,
+    perf.memBandwidth,
+    perf.cpu,
+    perf.cpuPerf,
+    perf.cpuPerDollar,
     gb(offer.cpu_ram),
     `${Math.round(offer.disk_space ?? 0)} GB`,
+    perf.down,
     rateCell(offer.dph_total),
     (budget / offer.dph_total).toFixed(1),
     timeLeft(offer, now) ?? "no end date",
     (offer.reliability ?? 0).toFixed(3),
+    perf.verified,
     offer.geolocation ?? "?",
     String(offer.ask_contract_id),
   ];
+}
+
+/** One link or null per cell: the GPU and CPU names to their PassMark pages. */
+function linksOf(offer: Offer, cpus: CpuIndex): (string | null)[] {
+  const links: (string | null)[] = COLUMNS.map(() => null);
+  links[GPU_COLUMN] = gpuLink(offer.gpu_name);
+  links[CPU_COLUMN] = cpuLink(offer, cpus);
+  return links;
 }
 
 /** Today's offers for the ids, in the session's order, without those gone, too dear for an hour or ending before the budget runs out. */
@@ -172,17 +206,19 @@ async function cardOffers(deps: ToolDeps, args: RentArgs): Promise<Offer[]> {
   );
 }
 
-function cardOf(
+async function cardOf(
   deps: ToolDeps,
   args: RentArgs,
   offers: readonly Offer[],
   guard: CreditGuard,
-): ExtensionPick {
+): Promise<ExtensionPick> {
   const now = deps.now();
+  const cpus = await cpuScores(deps.get, now);
   return {
     title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: COLUMNS,
-    rows: offers.map((offer) => rowOf(offer, args.budget, now)),
+    rows: offers.map((offer) => rowOf(offer, args.budget, now, cpus)),
+    ...(hasLinks(deps) ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
     action: "Rent",
     amount: {
       label: "Budget for this rental",
@@ -210,7 +246,7 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
   // The dearest row's rate: the limit then holds whichever row the reader picks.
   const dearest = Math.max(...offers.map((offer) => offer.dph_total));
   const guard = creditGuard(deps, await creditNow(deps, { label }), dearest, ACK_TEXT);
-  const answer = await ctx.pick(cardOf(deps, args, offers, guard));
+  const answer = await ctx.pick(await cardOf(deps, args, offers, guard));
   if (answer === null) {
     return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
   }

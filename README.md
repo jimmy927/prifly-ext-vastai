@@ -261,6 +261,16 @@ its end. The extension now checks every booking against the credit.
   whose `api.features` include `pick-amount-limit`. On an older one, the
   breakdown goes in the hint, and a budget past it is asked about again on a
   second card.
+- **Performance on the card.** Each offer on `vast_rent`'s card (and each line
+  of `vast_offers`) shows its GPU perf (Vast's `dlperf` for the whole rental)
+  and GPU perf per $/h, memory bandwidth, the CPU with its CPU perf and CPU
+  perf per $/h, download speed and whether Vast has verified the host. CPU
+  perf is PassMark's multithread CPU Mark of the chip, divided by the chip's
+  threads and multiplied by the threads rented; a chip with no PassMark entry
+  or no known thread count shows "unscored". The marks are read from
+  cpubenchmark.net once a day; if that fails every chip is unscored and the
+  rent goes on. On a prifly whose `api.features` include `pick-links`, the GPU
+  and CPU names link to their PassMark pages.
 - **While boxes run.** Each minute the runway (the credit ÷ the account's
   burn) is checked. Under each of `warnHours` you are told once, on the
   sessions whose boxes bill, or in the status bar when none of this prifly's
