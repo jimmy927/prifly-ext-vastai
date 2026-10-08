@@ -5,7 +5,6 @@
   "version": "0.10.0",
   "main": "index.ts",
   "prompt": "prompt.md",
-  "statusBar": false,
   "vault": ["vastai"],
   "panels": [
     {

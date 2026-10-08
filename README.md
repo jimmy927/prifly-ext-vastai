@@ -6,9 +6,9 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
 - **Shows your boxes.** Each rented Vast.ai box appears on the session that
   rented it: as an icon on that session's row in the sidebar, and as a chip
   under the goal when the session is open. The colour shows how busy the box
-  is. Every box is also a card in the **Vast.ai** panel (see below). The
-  extension draws nothing on the status bar (`"statusBar": false`): a box on
-  no session the sidebar shows is only in the panel.
+  is. Every box is also a card in the **Vast.ai** panel (see below). A running
+  box that is on no live session (the session ended or is gone, or the box
+  has no session label) is in the status bar instead, so none goes unseen.
 - **Opens a shell on a box.** Click a box's icon and prifly opens `ssh` to it
   in a terminal window of its own: a real desktop window you can move
   anywhere, apart from prifly's. No terminal app is needed.
@@ -515,7 +515,7 @@ type-checks on its own.
 
 | `api.` | What it does |
 |---|---|
-| `show(bySession, unclaimed)` | Replaces everything this extension shows. `bySession` is keyed by a session id, or any unique start of one (8 characters is enough). Items for an id that matches no session, and the `unclaimed` items, go to the status bar. |
+| `show(bySession, statusBar)` | Replaces everything this extension shows. `bySession` is keyed by a session id, or any unique start of one (8 characters is enough); an item is drawn only on the banner of a session the window shows, and is otherwise dropped. The `statusBar` items always go to the status bar. |
 | `sessions()` | The sessions the host knows: id, title, folder and state. Use it to match your things against them. |
 | `log(event, fields)` | A line in the host's log, as `ext.<id>.<event>`. |
 | `folder` | Your extension's folder: keep your config here (`config.json` is gitignored in this repository). |

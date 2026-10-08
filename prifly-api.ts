@@ -56,7 +56,7 @@ export type Decoration = {
   actions?: DecorationAction[] | undefined;
   /**
    * The `id` of one of this extension's own panels that the item is the state
-   * of. Only for the `unclaimed` items of `show`: the status bar then draws no
+   * of. Only for the `statusBar` items of `show`: the status bar then draws no
    * chip, but that panel's button, its icon coloured by `tone`, its hover
    * holding `label` and `details`. An older prifly draws an ordinary chip.
    */
@@ -214,9 +214,11 @@ export type ExtensionApi = {
   /**
    * Replace everything this extension shows. `bySession` is keyed by a
    * session id or any unique start of one (a label has room for 8 characters);
-   * items for an id no session has, and `unclaimed`, go to the status bar.
+   * an item is drawn only on the banner of a session the window shows, and is
+   * otherwise dropped, with no fallback. `statusBar` items always go to the
+   * status bar.
    */
-  show(bySession: Record<string, Decoration[]>, unclaimed: Decoration[]): void;
+  show(bySession: Record<string, Decoration[]>, statusBar: Decoration[]): void;
   /**
    * Replace every machine this extension offers sessions to use, the whole
    * list each time. Absent on a prifly host older than the "machines"

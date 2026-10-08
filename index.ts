@@ -322,9 +322,9 @@ function creditConfig(raw: Partial<CreditConfig> | undefined): CreditConfig {
 }
 
 /**
- * Each box on the session that rented it, and nothing on the status bar: the
- * manifest says `"statusBar": false`, so the host drops a box whose session
- * the sidebar does not show. A box on no session here is a card in the panel.
+ * A box on a live session (known, not ended) goes on that session's banner;
+ * every other running box goes to the status bar so none is invisible. A box
+ * that is not running and on no live session is only a card in the panel.
  */
 export function show(
   api: Pick<ExtensionApi, "show" | "sessions">,
@@ -336,6 +336,7 @@ export function show(
   claims: ReadonlyMap<number, string> = new Map(),
 ): void {
   const bySession: Record<string, Decoration[]> = {};
+  const statusBar: Decoration[] = [];
   const sessions = api.sessions();
   hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
@@ -344,11 +345,14 @@ export function show(
     const session = sessionKeyOf(box, config.owner, claims);
     const lease = box.id === undefined ? undefined : judged.get(box.id);
     const item = decoration(box, name, session, lease, config, hold, now);
-    if (session !== null && sessionOf(session, sessions) !== null) {
+    const known = session === null ? null : sessionOf(session, sessions);
+    if (session !== null && known !== null && known.state !== "ended") {
       bySession[session] = [...(bySession[session] ?? []), item];
+    } else if (box.actual_status === "running") {
+      statusBar.push(item);
     }
   }
-  api.show(bySession, []);
+  api.show(bySession, statusBar);
 }
 
 function decoration(
