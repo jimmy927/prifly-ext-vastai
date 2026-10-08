@@ -58,6 +58,7 @@ import {
 } from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
+import { span } from "./rules";
 import { sshCommand, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { makeTools } from "./tools";
@@ -322,9 +323,11 @@ function creditConfig(raw: Partial<CreditConfig> | undefined): CreditConfig {
 }
 
 /**
- * A box on a live session (known, not ended) goes on that session's banner;
- * every other running box goes to the status bar so none is invisible. A box
- * that is not running and on no live session is only a card in the panel.
+ * A box on a live session (known, not ended) goes on that session's banner.
+ * Every other running box is counted in one status-bar item that opens the
+ * spend panel, so none is invisible and the bar never holds more than one
+ * Vast.ai item. A box that is not running and on no live session is only a
+ * card in the panel.
  */
 export function show(
   api: Pick<ExtensionApi, "show" | "sessions">,
@@ -336,7 +339,7 @@ export function show(
   claims: ReadonlyMap<number, string> = new Map(),
 ): void {
   const bySession: Record<string, Decoration[]> = {};
-  const statusBar: Decoration[] = [];
+  const orphans: string[] = [];
   const sessions = api.sessions();
   hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
@@ -349,10 +352,29 @@ export function show(
     if (session !== null && known !== null && known.state !== "ended") {
       bySession[session] = [...(bySession[session] ?? []), item];
     } else if (box.actual_status === "running") {
-      statusBar.push(item);
+      orphans.push(orphanLine(box, name, now));
     }
   }
-  api.show(bySession, statusBar);
+  api.show(bySession, orphans.length === 0 ? [] : [orphanFlag(orphans)]);
+}
+
+/** "lc-box1 · $0.42/h · 3h 12m": a running box, its rate and how long it has run. */
+function orphanLine(box: Instance, name: string, now: number): string {
+  const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
+  const ran = box.start_date === undefined ? "" : ` · ${span(now - box.start_date * 1000)}`;
+  return `${name} · ${rate}${ran}`;
+}
+
+/** The one status-bar item for every running box on no live session. */
+function orphanFlag(lines: string[]): Decoration {
+  return {
+    key: "orphans",
+    panel: "spend",
+    icon: "server",
+    label: `${lines.length} ${lines.length === 1 ? "box" : "boxes"} on no session`,
+    tone: "warning",
+    details: lines,
+  };
 }
 
 function decoration(

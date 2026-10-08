@@ -113,7 +113,8 @@ describe("the status bar", () => {
       box({ id: 3, label: "jimmy/s-0ddba11c/old", actual_status: "running", cpu_util: 0 }),
     ]);
     expect(shown.bySession).toEqual({});
-    expect(shown.statusBar.map((d) => d.key)).toEqual(["3"]);
+    expect(shown.statusBar).toHaveLength(1);
+    expect(shown.statusBar[0]?.details[0]).toContain("old");
   });
 
   test("a running box whose session is unknown is in the status bar", () => {
@@ -121,13 +122,47 @@ describe("the status bar", () => {
       box({ id: 5, label: "jimmy/s-deadbeef/gone", actual_status: "running", cpu_util: 0 }),
     ]);
     expect(shown.bySession).toEqual({});
-    expect(shown.statusBar.map((d) => d.key)).toEqual(["5"]);
+    expect(shown.statusBar).toHaveLength(1);
+    expect(shown.statusBar[0]?.details[0]).toContain("gone");
   });
 
   test("a running box rented by hand is in the status bar", () => {
     const shown = shownFor([box({ id: 6, label: "by-hand", actual_status: "running" })]);
     expect(shown.bySession).toEqual({});
-    expect(shown.statusBar.map((d) => d.key)).toEqual(["6"]);
+    expect(shown.statusBar).toHaveLength(1);
+  });
+
+  test("one box on no session is one flag on the panel button", () => {
+    const shown = shownFor([
+      box({ id: 6, label: "jimmy/s-0ddba11c/lc-box1", actual_status: "running", dph_total: 0.42 }),
+    ]);
+    expect(shown.statusBar).toHaveLength(1);
+    const [flag] = shown.statusBar;
+    expect(flag?.key).toBe("orphans");
+    expect(flag?.panel).toBe("spend");
+    expect(flag?.tone).toBe("warning");
+    expect(flag?.label).toBe("1 box on no session");
+    expect(flag?.details).toEqual(["lc-box1 · $0.42/h · 1h 0m"]);
+    expect(flag?.terminal).toBeUndefined();
+    expect(flag?.actions).toBeUndefined();
+  });
+
+  test("several boxes on no session are still one flag, a line each", () => {
+    const shown = shownFor([
+      box({ id: 3, label: "jimmy/s-0ddba11c/old", actual_status: "running" }),
+      box({ id: 5, label: "jimmy/s-deadbeef/gone", actual_status: "running" }),
+      box({ id: 6, label: "by-hand", actual_status: "running" }),
+      box({ id: 2, label: "jimmy/s-e5636c90/zz", actual_status: "running" }),
+    ]);
+    expect(shown.statusBar).toHaveLength(1);
+    const [flag] = shown.statusBar;
+    expect(flag?.panel).toBe("spend");
+    expect(flag?.tone).toBe("warning");
+    expect(flag?.label).toBe("3 boxes on no session");
+    expect(flag?.details).toHaveLength(3);
+    expect(flag?.details[0]).toContain("old");
+    expect(flag?.details[1]).toContain("gone");
+    expect(Object.keys(shown.bySession)).toEqual(["e5636c90"]);
   });
 
   test("a stopped box on no live session is in neither", () => {
