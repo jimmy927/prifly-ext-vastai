@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { boxCards, panelItem, stateOf } from "../fleet";
+import { boxCards, stateOf } from "../fleet";
 import { show } from "../index";
 import { GpuHold } from "../load";
 import type { Decoration, ExtensionSession } from "../prifly-api";
@@ -73,24 +73,7 @@ describe("the cards", () => {
 });
 
 describe("the status bar", () => {
-  test("keeps only the panel's button: amber for a disk still billing", () => {
-    const cards = boxCards(
-      [
-        box({ id: 1, label: "jimmy/s-e5636c90/aa", actual_status: "exited" }),
-        box({ id: 2, label: "jimmy/s-e5636c90/zz", actual_status: "running" }),
-      ],
-      deps,
-    );
-    expect(panelItem(cards, new Map(), "spend")).toMatchObject({
-      key: "fleet",
-      panel: "spend",
-      tone: "warning",
-      label: "Vast.ai: 1 running, 1 disk only · $0.52/h",
-    });
-    expect(panelItem([], new Map(), "spend")).toBeNull();
-  });
-
-  test("a box on a known session stays on it; the rest fold into the panel's button", () => {
+  test("a box on a known session stays on it; nothing reaches the status bar", () => {
     const shown: { bySession: Record<string, Decoration[]>; unclaimed: Decoration[] } = {
       bySession: {},
       unclaimed: [],
@@ -115,8 +98,11 @@ describe("the status bar", () => {
       NOW,
     );
     expect(Object.keys(shown.bySession)).toEqual(["e5636c90"]);
-    expect(shown.unclaimed).toHaveLength(1);
-    expect(shown.unclaimed[0]).toMatchObject({ key: "fleet", panel: "spend" });
-    expect(shown.unclaimed[0]?.details).toContain("On no session here: by-hand, gone");
+    expect(shown.unclaimed).toEqual([]);
+  });
+
+  test("the manifest keeps the extension off the status bar", async () => {
+    const manifest = await Bun.file(new URL("../prifly-extension.json", import.meta.url)).json();
+    expect(manifest.statusBar).toBe(false);
   });
 });

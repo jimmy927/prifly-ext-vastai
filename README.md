@@ -6,9 +6,9 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
 - **Shows your boxes.** Each rented Vast.ai box appears on the session that
   rented it: as an icon on that session's row in the sidebar, and as a chip
   under the goal when the session is open. The colour shows how busy the box
-  is. Every box is also a card in the **Vast.ai** panel (see below); the
-  status bar keeps only the panel's button, coloured by the boxes on no
-  session here and amber while a stopped box still bills its disk.
+  is. Every box is also a card in the **Vast.ai** panel (see below). The
+  extension draws nothing on the status bar (`"statusBar": false`): a box on
+  no session the sidebar shows is only in the panel.
 - **Opens a shell on a box.** Click a box's icon and prifly opens `ssh` to it
   in a terminal window of its own: a real desktop window you can move
   anywhere, apart from prifly's. No terminal app is needed.

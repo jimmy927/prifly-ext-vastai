@@ -45,7 +45,7 @@ import {
   seedFromHostLog,
   withRecorder,
 } from "./events";
-import { boxCards, ownerOf, panelItem, sessionKeyOf, sessionOf } from "./fleet";
+import { boxCards, ownerOf, sessionKeyOf, sessionOf } from "./fleet";
 import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
 import { cardLoad, GpuHold } from "./load";
 import {
@@ -57,13 +57,7 @@ import {
   statusOf,
 } from "./machine-card";
 import { readOwner } from "./owner";
-import type {
-  Decoration,
-  DecorationTone,
-  ExtensionApi,
-  ExtensionMachine,
-  PanelRequest,
-} from "./prifly-api";
+import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
 import { sshCommand, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { makeTools } from "./tools";
@@ -88,9 +82,6 @@ type Config = {
   owner: string;
   credit: CreditConfig;
 };
-
-/** The manifest's panel: spend, and every box as a card. */
-const PANEL = "spend";
 
 /** What the panel reads, while the extension runs. */
 let panelDeps: PanelDeps | null = null;
@@ -331,9 +322,9 @@ function creditConfig(raw: Partial<CreditConfig> | undefined): CreditConfig {
 }
 
 /**
- * Each box on the session that rented it. A box on no session this prifly
- * knows is not a chip of its own in the status bar any more: it is a card in
- * the panel, and its colour goes into the panel's button (`panelItem`).
+ * Each box on the session that rented it, and nothing on the status bar: the
+ * manifest says `"statusBar": false`, so the host drops a box whose session
+ * the sidebar does not show. A box on no session here is a card in the panel.
  */
 export function show(
   api: Pick<ExtensionApi, "show" | "sessions">,
@@ -345,7 +336,6 @@ export function show(
   claims: ReadonlyMap<number, string> = new Map(),
 ): void {
   const bySession: Record<string, Decoration[]> = {};
-  const folded = new Map<string, DecorationTone>();
   const sessions = api.sessions();
   hold.keep(new Set(boxes.flatMap((box) => (box.id === undefined ? [] : [box.id]))));
   for (const box of boxes) {
@@ -356,11 +346,9 @@ export function show(
     const item = decoration(box, name, session, lease, config, hold, now);
     if (session !== null && sessionOf(session, sessions) !== null) {
       bySession[session] = [...(bySession[session] ?? []), item];
-    } else folded.set(item.key, item.tone);
+    }
   }
-  const cards = boxCards(boxes, { ...config, sessions, judged, hold, now, claims });
-  const button = panelItem(cards, folded, PANEL);
-  api.show(bySession, button === null ? [] : [button]);
+  api.show(bySession, []);
 }
 
 function decoration(

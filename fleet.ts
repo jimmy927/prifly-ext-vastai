@@ -1,13 +1,12 @@
 /**
- * The boxes as the panel's machine cards (`panel/machines.js`), and the one
- * item the status bar keeps for them: the panel's own button.
+ * The boxes as the panel's machine cards (`panel/machines.js`).
  *
  * A box shows on the session that rented it, in the sidebar and under the
  * goal. Every box is also a card in the panel, with what the chip only hints
  * at on hover: its session, lease, spend, load, disk and ssh, and its actions.
  * A box no session here holds — rented by hand, another prifly's, or a
- * session this prifly does not know — used to be a chip in the status bar;
- * now it is only in the panel, and colours the panel's button.
+ * session this prifly does not know — is only in the panel: the extension
+ * never draws on the status bar.
  *
  * A box is one of three states, because they bill differently:
  * - `running`: billing its whole rate (`dph_total`);
@@ -20,7 +19,7 @@ import { type Worker, workerOf } from "./endpoints";
 import type { Judged } from "./enforce";
 import { cardLoad, type GpuHold } from "./load";
 import { isManaged, leaseLine } from "./machine-card";
-import type { Decoration, DecorationTone, ExtensionSession } from "./prifly-api";
+import type { DecorationTone, ExtensionSession } from "./prifly-api";
 import { parseLabel } from "./rules";
 import { sshCommand, sshTarget } from "./run";
 import type { Instance } from "./vast-api";
@@ -200,58 +199,4 @@ export function boxCards(boxes: readonly Instance[], deps: CardDeps): BoxCard[] 
   return boxes
     .map((box) => boxCard(box, deps))
     .sort((a, b) => order[a.state] - order[b.state] || a.name.localeCompare(b.name));
-}
-
-const RANK: Record<DecorationTone, number> = {
-  critical: 4,
-  warning: 3,
-  info: 2,
-  good: 1,
-  muted: 0,
-};
-
-/**
- * The status bar's one item for the boxes: the panel's button, coloured by
- * the worst of what is only seen there (the boxes on no session of this
- * prifly), and amber for a disk still billing. Null when there is no box.
- */
-export function panelItem(
-  cards: readonly BoxCard[],
-  folded: ReadonlyMap<string, DecorationTone>,
-  panel: string,
-): Decoration | null {
-  if (cards.length === 0) return null;
-  const running = cards.filter((c) => c.state !== "disk");
-  const disks = cards.filter((c) => c.state === "disk");
-  const burn =
-    running.reduce((n, c) => n + c.rate, 0) + disks.reduce((n, c) => n + (c.diskRate ?? 0), 0);
-  const tones: DecorationTone[] = [
-    ...folded.values(),
-    ...(disks.length > 0 ? ["warning" as const] : []),
-  ];
-  const tone = tones.reduce<DecorationTone>(
-    (worst, t) => (RANK[t] > RANK[worst] ? t : worst),
-    "info",
-  );
-  const counts = [
-    running.length > 0 ? `${running.length} running` : "",
-    disks.length > 0 ? `${disks.length} disk only` : "",
-  ].filter((s) => s !== "");
-  const outside = cards.filter((c) => folded.has(c.key));
-  return {
-    key: "fleet",
-    icon: "server",
-    label: `Vast.ai: ${counts.join(", ")} · $${burn.toFixed(2)}/h`,
-    tone,
-    details: [
-      ...(disks.length > 0
-        ? [`${disks.map((c) => c.name).join(", ")}: stopped, still billing disk until destroyed`]
-        : []),
-      ...(outside.length > 0
-        ? [`On no session here: ${outside.map((c) => c.name).join(", ")}`]
-        : []),
-      "Open the panel for every box, its session and its actions.",
-    ],
-    panel,
-  };
 }
