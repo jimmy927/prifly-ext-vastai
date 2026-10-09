@@ -241,7 +241,9 @@ describe("withSshRepair", () => {
     },
   );
 
-  test.skipIf(!bash)("the repair fixes the modes and StrictModes it is meant to", async () => {
+  // POSIX file modes: Windows has none to check, and the repair runs only on the Linux box.
+  const posix = bash !== null && process.platform !== "win32";
+  test.skipIf(!posix)("the repair fixes the modes and StrictModes it is meant to", async () => {
     const home = await mkdtemp(join(tmpdir(), "onstart-"));
     try {
       await mkdir(join(home, "root/.ssh"), { recursive: true });
