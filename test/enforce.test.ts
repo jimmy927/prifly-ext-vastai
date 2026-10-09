@@ -327,11 +327,13 @@ describe("the host's end date", () => {
     expect(fake.calls).toEqual([]);
   });
 
-  test("a leased running box gets guard.sh with LF line ends, whatever the checkout's", async () => {
+  /** What a leased running box is sent as its guard, with `guardScript` as the source when given. */
+  async function guardSent(guardScript?: () => Promise<string>): Promise<string[]> {
     const { api } = await leased();
     const scripts: string[] = [];
     const enforcer = new Enforcer(api, config(true), {
       ...fakeDestroy().deps,
+      ...(guardScript === undefined ? {} : { guardScript }),
       onBox: async (_target, _key, command, _timeout, stdin) => {
         if (command.includes("guard.sh") && stdin !== undefined) scripts.push(stdin);
         return { code: 0, out: "", err: "" };
@@ -339,9 +341,20 @@ describe("the host's end date", () => {
     });
     await enforcer.round([hosted(null)], NOW);
     for (let i = 0; i < 50 && scripts.length === 0; i += 1) await Bun.sleep(20);
+    return scripts;
+  }
+
+  test("a leased running box gets guard.sh, LF-only and starting with #!", async () => {
+    const scripts = await guardSent();
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toStartWith("#!");
     expect(scripts[0]).not.toContain("\r");
+  });
+
+  test("a guard.sh checked out with CRLF goes to the box with LF", async () => {
+    expect(await guardSent(async () => "#!/bin/sh\r\necho hi\r\n")).toEqual([
+      "#!/bin/sh\necho hi\n",
+    ]);
   });
 });
 
