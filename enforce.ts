@@ -447,7 +447,11 @@ export class Enforcer {
   }
 
   async #writeGuard(target: { host: string; port: number }, id: number, until: number) {
-    const script = await Bun.file(join(import.meta.dir, "guard.sh")).text();
+    // LF only: a checkout made with CRLF (Windows' autocrlf) would break /bin/sh on the box.
+    const script = (await Bun.file(join(import.meta.dir, "guard.sh")).text()).replace(
+      /\r\n/g,
+      "\n",
+    );
     const grace = Math.round((GRACE_MS + GUARD_MARGIN_MS) / 1000);
     const command = [
       "set -e; d=/root/.lease; mkdir -p $d",

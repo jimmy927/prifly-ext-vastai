@@ -1,5 +1,6 @@
 /** Running things: commands on a box over ssh. */
 
+import { join } from "node:path";
 import type { Instance } from "./vast-api";
 
 export type Ran = { code: number; out: string; err: string };
@@ -46,6 +47,32 @@ export function sshCommand(host: string, port: number, sshKey: string | null): s
     String(port),
     `root@${host}`,
   ];
+}
+
+/**
+ * `sshKey` from `config.json` as a path on this machine: a leading `~`, then
+ * `/` or `\`, is the home folder (`homedir()`: `$HOME`, or `%USERPROFILE%` on
+ * Windows); any other path, `C:\…` included, is taken as written.
+ */
+export function sshKeyPath(raw: string, home: string): string {
+  if (raw === "~") return home;
+  return /^~[/\\]/.test(raw) ? join(home, ...raw.slice(2).split(/[/\\]/)) : raw;
+}
+
+/**
+ * Why the configured key file cannot be used here, or null when it exists. A
+ * POSIX path on native Windows is named as such: a config written in WSL
+ * (`/home/…`) points at nothing once prifly runs on Windows.
+ */
+export async function sshKeyProblem(
+  path: string,
+  platform: string = process.platform,
+): Promise<string | null> {
+  if (await Bun.file(path).exists()) return null;
+  const posixOnWindows = platform === "win32" && path.startsWith("/");
+  return posixOnWindows
+    ? `sshKey ${path} is a WSL/Linux path, which does not exist on native Windows: point "sshKey" in config.json at the key on this machine, e.g. ~/.ssh/vast_ed25519 under %USERPROFILE%`
+    : `sshKey ${path} does not exist on this machine: ssh to the boxes will fail until "sshKey" in config.json names the key`;
 }
 
 /** Run a shell command on a box, unattended: no password prompt, a bounded wait to connect. */

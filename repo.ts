@@ -59,7 +59,7 @@ export function repoOfFolder(cwd: string): string {
   } catch {
     // Unreadable on the way up: placed by its path below.
   }
-  const main = /^(.*?)\.worktrees\//.exec(cwd)?.[1];
+  const main = /^(.*?)\.worktrees[/\\]/.exec(cwd)?.[1];
   if (main !== undefined) return existsSync(join(main, ".git")) ? originOf(main) : basename(main);
   return NO_REPO;
 }

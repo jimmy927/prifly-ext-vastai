@@ -59,7 +59,7 @@ import {
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
 import { span } from "./rules";
-import { sshCommand, sshTarget } from "./run";
+import { sshCommand, sshKeyPath, sshKeyProblem, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { makeTools } from "./tools";
 import {
@@ -73,7 +73,8 @@ import {
 
 /**
  * `sshKey`: the private key your boxes accept, for the terminal a click opens
- * and the save and guard the leases run. `enforce`: destroy what breaks a lease.
+ * and the save and guard the leases run: `~/…` (or `~\…`) or a full path on
+ * this machine; a missing file is logged (`ssh_key_missing`), not fatal. `enforce`: destroy what breaks a lease.
  * `credit`: the margin kept free of the account's credit, and the runway warnings.
  */
 type Config = {
@@ -119,6 +120,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   );
   const observer = new Observer(history);
   const config = await readConfig(api.folder);
+  await logKeyProblem(api, config.sshKey);
   // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
   const keys = () => readApiKeys(process.env, homedir(), api.vault);
   const enforcer = new Enforcer(api, config);
@@ -294,13 +296,19 @@ function remember(labels: Map<number, string>, boxes: readonly Instance[]): void
   for (const box of boxes) if (box.id !== undefined) labels.set(box.id, box.label ?? "");
 }
 
+/** A configured key that is not on this machine, logged; not fatal: the REST side still works. */
+async function logKeyProblem(api: Pick<ExtensionApi, "log">, sshKey: string | null) {
+  const problem = sshKey === null ? null : await sshKeyProblem(sshKey);
+  if (problem !== null) api.log("ssh_key_missing", { path: sshKey, message: problem });
+}
+
 async function readConfig(folder: string): Promise<Config> {
   const raw = (await Bun.file(join(folder, "config.json"))
     .json()
     .catch(() => ({}))) as Partial<Config>;
   return {
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
-    sshKey: raw.sshKey == null ? null : raw.sshKey.replace(/^~(?=\/)/, homedir()),
+    sshKey: raw.sshKey == null ? null : sshKeyPath(raw.sshKey, homedir()),
     enforce: raw.enforce === true,
     owner: await readOwner(folder, process.env),
     credit: creditConfig(raw.credit),

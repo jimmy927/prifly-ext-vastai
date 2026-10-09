@@ -326,6 +326,23 @@ describe("the host's end date", () => {
     await Bun.sleep(50);
     expect(fake.calls).toEqual([]);
   });
+
+  test("a leased running box gets guard.sh with LF line ends, whatever the checkout's", async () => {
+    const { api } = await leased();
+    const scripts: string[] = [];
+    const enforcer = new Enforcer(api, config(true), {
+      ...fakeDestroy().deps,
+      onBox: async (_target, _key, command, _timeout, stdin) => {
+        if (command.includes("guard.sh") && stdin !== undefined) scripts.push(stdin);
+        return { code: 0, out: "", err: "" };
+      },
+    });
+    await enforcer.round([hosted(null)], NOW);
+    for (let i = 0; i < 50 && scripts.length === 0; i += 1) await Bun.sleep(20);
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]).toStartWith("#!");
+    expect(scripts[0]).not.toContain("\r");
+  });
 });
 
 test("the enforcer destroys with the key from prifly's vault, before any key file", async () => {
