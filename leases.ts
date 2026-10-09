@@ -107,24 +107,41 @@ export async function updateLeases<T>(
   }
 }
 
+/**
+ * Make the lock file: "made", or "held" when it exists. On Windows an EPERM
+ * comes back as itself: Windows says that while the last holder's file is
+ * still being deleted. Any other error is thrown.
+ */
+async function create(path: string): Promise<"made" | "held" | Error> {
+  try {
+    const handle = await open(path, "wx");
+    await handle.close();
+    return "made";
+  } catch (caught) {
+    const code = caught instanceof Error && "code" in caught ? caught.code : null;
+    if (code === "EEXIST") return "held";
+    if (process.platform === "win32" && code === "EPERM") return caught as Error;
+    throw caught;
+  }
+}
+
 /** Hold `path` as a lock file; the function given back lets go. */
 export async function lock(path: string): Promise<() => Promise<void>> {
   await mkdir(dirname(path), { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try {
-      const handle = await open(path, "wx");
-      await handle.close();
-      return () => rm(path, { force: true });
-    } catch (caught) {
-      if (!(caught instanceof Error && "code" in caught && caught.code === "EEXIST")) throw caught;
-    }
+    const made = await create(path);
+    if (made === "made") return () => rm(path, { force: true });
     const held = await stat(path).catch(() => null);
     if (held !== null && Date.now() - held.mtimeMs > STALE_LOCK_MS) {
       await rm(path, { force: true });
       continue;
     }
-    if (Date.now() > deadline) throw new Error(`The lease file is locked: ${path}`);
+    if (Date.now() > deadline) {
+      // An EPERM that never cleared was a real refusal: its own error, not "locked".
+      if (made instanceof Error) throw made;
+      throw new Error(`The lease file is locked: ${path}`);
+    }
     await Bun.sleep(50);
   }
 }
