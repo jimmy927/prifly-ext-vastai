@@ -15,6 +15,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "a job",
+  need: "gpu" as const,
+  need_note: "one GPU for the job",
 };
 
 /** A card of five offers, each on a machine of its own, except 102, which shares 101's. */

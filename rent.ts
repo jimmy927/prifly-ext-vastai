@@ -14,27 +14,16 @@
  */
 
 import { z } from "zod";
-import { type CpuIndex, cpuLink, cpuScores } from "./cpu-score";
+import { cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
-import { gpuLink } from "./gpu-link";
 import { book, dropBooking, MAX_AHEAD_MS, type Replace, setReplace, updateLeases } from "./leases";
-import {
-  endsCell,
-  endsTooSoon,
-  fetchOffer,
-  gpuCell,
-  type Offer,
-  perfCells,
-  placeOf,
-  timeLeft,
-  vramCell,
-} from "./offers";
+import { endsTooSoon, fetchOffer, type Offer, perfCells, timeLeft } from "./offers";
 import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
+import { type CellInput, columnsFor, NEEDS } from "./rent-columns";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
 import {
   type CreditGuard,
-  cardRate,
   confirmOver,
   creditGuard,
   creditNow,
@@ -94,11 +83,22 @@ const RentArgs = z.strictObject({
     .describe(
       "What the box is for and why this budget: it is shown on the card, in the reader's words, as the reason for the suggestion.",
     ),
+  need: z
+    .enum(NEEDS)
+    .describe(
+      'What the work is bound by, which decides the columns on the card. "gpu": the work runs on the GPU (training, inference); the card shows every column. "cpu": CPU-bound work (compiles, embeddings on the CPU, data crunching); the card drops the GPU columns and keeps CPU performance. "io": it waits on the network or remote APIs, so the cheapest reliable box wins; the card drops the GPU and CPU performance columns.',
+    ),
+  need_note: z
+    .string()
+    .min(1)
+    .describe(
+      'One line saying concretely what the job needs, shown on the card as "Needs: ...", e.g. "1-2 threads, no GPU: waits on Gemini".',
+    ),
 });
 type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
+  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. Use vast_offers first to find offer ids. Never rent any other way.';
 
 /**
  * Run first in every box's onstart so sshd's "bad ownership or modes" check can
@@ -127,95 +127,9 @@ function hintOf(purpose: string): string {
   return `Suggested by Claude: ${reason}. The box is saved and destroyed when it has cost this much.`;
 }
 
-const COLUMNS = [
-  "GPU",
-  "VRAM",
-  "GPU perf · /$",
-  "Mem GB/s",
-  "CPU",
-  "CPU perf · /$",
-  "RAM",
-  "Disk",
-  "Mbps",
-  "$/h",
-  "Hours",
-  "Ends in",
-  "Rel.",
-  "Verified",
-  "Where",
-  "Offer",
-];
-const col = (name: string) => COLUMNS.indexOf(name);
-const GPU_COLUMN = col("GPU");
-const CPU_COLUMN = col("CPU");
-const WHERE_COLUMN = col("Where");
-const OFFER_COLUMN = col("Offer");
-
-/** Vast's console, on one offer. Unverified: the console is a single-page app and may ignore `ask`. */
-function offerUrl(offer: Offer): string {
-  return `https://cloud.vast.ai/?ask=${offer.ask_contract_id}`;
-}
-
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
 export function runHours(offer: Offer, budget: number): number {
   return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
-}
-
-/** One card row. `flags`: the Where cell is the bare country code, which a prifly with "pick-cells" draws as a flag. */
-function rowOf(
-  offer: Offer,
-  budget: number,
-  now: number,
-  cpus: CpuIndex,
-  flags: boolean,
-): string[] {
-  const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
-  const perf = perfCells(offer, cpus);
-  const place = placeOf(offer.geolocation);
-  return [
-    gpuCell(offer),
-    vramCell(offer),
-    perf.gpuPerf === "?" ? "–" : `${perf.gpuPerf} · ${perf.gpuPerDollar}`,
-    perf.memBandwidth,
-    perf.cpu,
-    perf.cpuPerf === "unscored" ? "–" : `${perf.cpuPerf} · ${perf.cpuPerDollar}`,
-    gb(offer.cpu_ram),
-    `${Math.round(offer.disk_space ?? 0)} GB`,
-    perf.down,
-    cardRate(offer.dph_total),
-    (budget / offer.dph_total).toFixed(1),
-    endsCell(offer, now),
-    (offer.reliability ?? 0).toFixed(3),
-    perf.verified,
-    flags && place.code !== null ? place.code : place.text,
-    String(offer.ask_contract_id),
-  ];
-}
-
-/** One link or null per cell: the GPU and CPU names to their PassMark pages, and the offer to Vast's console. */
-function linksOf(offer: Offer, cpus: CpuIndex): (string | null)[] {
-  const links: (string | null)[] = COLUMNS.map(() => null);
-  links[GPU_COLUMN] = gpuLink(offer.gpu_name);
-  links[CPU_COLUMN] = cpuLink(offer, cpus);
-  links[OFFER_COLUMN] = offerUrl(offer);
-  return links;
-}
-
-/** Hover text and how to draw the cells that are not plain text: the country as a flag, the offer as a link icon (when its link is sent). */
-function cellsOf(
-  offer: Offer,
-  offerLink: boolean,
-): { titles: (string | null)[]; kinds: ("flag" | "link-icon" | null)[] } {
-  const titles: (string | null)[] = COLUMNS.map(() => null);
-  const kinds: ("flag" | "link-icon" | null)[] = COLUMNS.map(() => null);
-  const place = placeOf(offer.geolocation);
-  if (place.code !== null) {
-    titles[WHERE_COLUMN] = place.full;
-    kinds[WHERE_COLUMN] = "flag";
-  }
-  titles[OFFER_COLUMN] = `Offer ${offer.ask_contract_id} on Vast.ai`;
-  if (offerLink) kinds[OFFER_COLUMN] = "link-icon";
-  return { titles, kinds };
 }
 
 /** Today's offers for the ids, in the session's order, without those gone, too dear for an hour or ending before the budget runs out. */
@@ -241,16 +155,29 @@ async function cardOf(
   const cpus = await cpuScores(deps.get, now);
   const links = hasLinks(deps);
   const cells = hasCells(deps);
-  const marks = cells ? offers.map((offer) => cellsOf(offer, links)) : [];
+  const columns = columnsFor(args.need);
+  // One cell per offer and chosen column: rows, links, titles and kinds cannot drift apart.
+  const built = offers.map((offer) => {
+    const input: CellInput = {
+      offer,
+      budget: args.budget,
+      now,
+      cpus,
+      perf: perfCells(offer, cpus),
+      flags: cells,
+      offerLink: links,
+    };
+    return columns.map((column) => column.cell(input));
+  });
   return {
-    title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
-    columns: COLUMNS,
-    rows: offers.map((offer) => rowOf(offer, args.budget, now, cpus, cells)),
-    ...(links ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
+    title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. Needs: ${args.need_note.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
+    columns: columns.map((column) => column.name),
+    rows: built.map((row) => row.map((cell) => cell.text)),
+    ...(links ? { links: built.map((row) => row.map((cell) => cell.link ?? null)) } : {}),
     ...(cells
       ? {
-          titles: marks.map((mark) => mark.titles),
-          cellKinds: marks.map((mark) => mark.kinds),
+          titles: built.map((row) => row.map((cell) => cell.title ?? null)),
+          cellKinds: built.map((row) => row.map((cell) => cell.kind ?? null)),
         }
       : {}),
     action: "Rent",

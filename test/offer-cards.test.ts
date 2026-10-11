@@ -139,6 +139,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "rank by performance",
+  need: "gpu" as const,
+  need_note: "one GPU for the job",
 };
 
 function world(features: string[] = []) {

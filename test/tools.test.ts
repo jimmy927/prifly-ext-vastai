@@ -18,6 +18,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "fine-tune a 4B model for about 3 hours",
+  need: "gpu" as const,
+  need_note: "one GPU for the job",
 };
 
 describe("vast_offers", () => {

@@ -251,6 +251,13 @@ function perDollar(value: number | null, offer: Offer, show: (n: number) => stri
   return value === null ? "–" : show(value / offer.dph_total);
 }
 
+/** "128 × Xeon Gold 6430", or "not reported" when Vast gives no CPU name or no usable cores. */
+function cpuCell(offer: Offer): string {
+  const cores = Math.round(offer.cpu_cores_effective ?? 0);
+  if (offer.cpu_name === undefined || offer.cpu_name === "" || cores <= 0) return "not reported";
+  return `${cores} × ${shortCpuName(offer.cpu_name)}`;
+}
+
 /** The cells the card and the offer list share: GPU and CPU performance, each per $/h, memory bandwidth, download speed, verification. */
 export function perfCells(offer: Offer, cpus: CpuIndex) {
   const gpuPerf = offer.dlperf ?? null;
@@ -260,7 +267,7 @@ export function perfCells(offer: Offer, cpus: CpuIndex) {
     gpuPerf: whole(gpuPerf ?? undefined),
     gpuPerDollar: perDollar(gpuPerf, offer, (n) => String(Math.round(n))),
     memBandwidth: whole(offer.gpu_mem_bw),
-    cpu: `${Math.round(offer.cpu_cores_effective ?? 0)} × ${offer.cpu_name === undefined ? "?" : shortCpuName(offer.cpu_name)}`,
+    cpu: cpuCell(offer),
     cpuPerf: cpu === null ? "unscored" : compact(cpu),
     cpuPerDollar: perDollar(cpu, offer, compact),
     down: whole(offer.inet_down),
