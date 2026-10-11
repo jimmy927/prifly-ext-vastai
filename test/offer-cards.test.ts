@@ -10,6 +10,7 @@ import {
   parseChips,
   resetCpuScores,
   shortCpuName,
+  threadsOf,
 } from "../cpu-score";
 import { gpuLink } from "../gpu-link";
 import { ctxFor, NOW, offer, setup, vast } from "./fake-vast";
@@ -50,6 +51,32 @@ describe("cpu-score", () => {
     expect(
       cpuPerf({ cpu_name: "AMD EPYC 7742 64-Core Processor", cpu_cores_effective: 256 }, INDEX),
     ).toBeCloseTo(139_166, 0);
+  });
+
+  test("1st and 2nd gen Xeon Scalable chips are scored from their spec-sheet threads", () => {
+    const xeon = indexChips(
+      parseChips(
+        '<a href="/cpu.php?cpu=Intel+Xeon+Gold+5115+%40+2.40GHz&amp;id=1"><span class="prdname">Intel Xeon Gold 5115 @ 2.40GHz</span><span class="count">15,152</span>' +
+          '<a href="/cpu.php?cpu=Intel+Xeon+Gold+6230R+%40+2.10GHz&amp;id=2"><span class="prdname">Intel Xeon Gold 6230R @ 2.10GHz</span><span class="count">30,000</span>',
+      ),
+    );
+    // 15152 / 20 threads (10 cores) * 5 rented.
+    const perf = cpuPerf(
+      { cpu_name: "Intel(R) Xeon(R) Gold 5115 CPU @ 2.40GHz", cpu_cores_effective: 5 },
+      xeon,
+    );
+    expect(perf).toBeCloseTo(3788, 0);
+    expect(compact(perf ?? 0)).toBe("3.8k");
+    // 30000 / 52 threads (26 cores, R suffix kept) * 13 rented.
+    expect(
+      cpuPerf(
+        { cpu_name: "Intel(R) Xeon(R) Gold 6230R CPU @ 2.10GHz", cpu_cores_effective: 13 },
+        xeon,
+      ),
+    ).toBeCloseTo(7500, 0);
+    expect(threadsOf("Intel(R) Xeon(R) Bronze 3106 CPU @ 1.70GHz")).toBe(8);
+    expect(threadsOf("Intel(R) Xeon(R) Silver 4114 CPU @ 2.20GHz")).toBe(20);
+    expect(threadsOf("Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz")).toBe(48);
   });
 
   test("a chip off PassMark's page, off the thread table, or an offer with no CPU is unscored, never core count", () => {
