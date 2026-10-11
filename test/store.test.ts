@@ -147,6 +147,18 @@ describe("the import from the files", () => {
     expect((await readEvents(store)).map((e) => e.kind)).toEqual(["rented", "appeared"]);
   });
 
+  test("a charges.json that does not parse is a cache to fill again, not a failure", async () => {
+    const dir = await folder();
+    await Bun.write(filePath(dir, "charges"), "{");
+    const store = new StateStore(fakeState(), dir, log);
+    const cache = new ChargeCache(store, async () => [
+      { box: 8, label: "x", kind: "instance", amount: 1 },
+    ]);
+    const { rows, failed } = await cache.days(["2026-10-06"], NOW);
+    expect(failed).toEqual([]);
+    expect(rows.get("2026-10-06")?.[0]?.amount).toBe(1);
+  });
+
   test("an import that fails throws, and is tried again on the next use", async () => {
     const dir = await oldFiles();
     const state = fakeState();

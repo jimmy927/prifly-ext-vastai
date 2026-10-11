@@ -257,7 +257,9 @@ export class StateStore implements Store {
     if (known !== undefined) return known;
     const importing = this.#state
       .importOnce(name, async () => {
-        const old = await readJson(filePath(this.#folder, name));
+        const reading = readJson(filePath(this.#folder, name));
+        // The charges are only a cache: one that does not parse is asked of Vast.ai again.
+        const old = await (name === "charges" ? reading.catch(() => undefined) : reading);
         if (old !== undefined) this.#log("state_imported", { name });
         return old;
       })
