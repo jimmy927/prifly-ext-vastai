@@ -10,17 +10,18 @@ import {
   maxBudget,
   overText,
 } from "./credit";
-import { leasesPath, readLeases } from "./leases";
+import { readLeases } from "./leases";
 import type { ExtensionApi, ExtensionTool, ExtensionToolContext, PickAmount } from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
 import { sshCommand } from "./run";
 import { budgetText, dollars } from "./spend";
+import type { Store } from "./store";
 import { type Fetch, getAccount, type Instance, listInstances, withKeys } from "./vast-api";
 
 /** Everything the tools reach outside themselves, so a test can hand in fakes. */
 export type ToolDeps = {
-  /** Where `leases.json` is kept. */
-  folder: string;
+  /** Where the leases and endpoint claims are kept (`store.ts`). */
+  store: Store;
   /** This prifly's label owner, read afresh: see `owner.ts`. */
   owner: () => Promise<string>;
   sshKey: string | null;
@@ -73,7 +74,7 @@ export async function creditNow(
     const [account, boxes, leases] = await Promise.all([
       withKeys(keys, (key) => getAccount(key, deps.get)),
       listInstances(keys, deps.get),
-      readLeases(leasesPath(deps.folder)),
+      readLeases(deps.store),
     ]);
     return { account, committed: committedOf(boxes, leases, deps.now(), deps.credit, except) };
   } catch (caught) {

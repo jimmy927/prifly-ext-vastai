@@ -33,20 +33,13 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ChargeCache, chargesPath, fetchDay } from "./charges";
+import { ChargeCache, fetchDay } from "./charges";
 import { CREDIT_DEFAULTS, type CreditConfig } from "./credit";
-import { claimMap, endpointsPath, readClaims } from "./endpoints";
+import { claimMap, readClaims } from "./endpoints";
 import { Enforcer, type Judged } from "./enforce";
-import {
-  eventsPath,
-  hostLogFolder,
-  Observer,
-  recorder,
-  seedFromHostLog,
-  withRecorder,
-} from "./events";
+import { hostLogFolder, Observer, recorder, seedFromHostLog, withRecorder } from "./events";
 import { boxCards, ownerOf, sessionKeyOf, sessionOf } from "./fleet";
-import { extend, type Lease, leasesPath, readLeases, updateLeases } from "./leases";
+import { extend, type Lease, readLeases, updateLeases } from "./leases";
 import { cardLoad, GpuHold } from "./load";
 import {
   boxActions,
@@ -61,6 +54,7 @@ import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from ".
 import { span } from "./rules";
 import { sshCommand, sshKeyPath, sshKeyProblem, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
+import { type Store, storeFor } from "./store";
 import { makeTools } from "./tools";
 import {
   destroyInstance,
@@ -74,7 +68,10 @@ import {
 /**
  * `sshKey`: the private key your boxes accept, for the terminal a click opens
  * and the save and guard the leases run: `~/…` (or `~\…`) or a full path on
- * this machine; a missing file is logged (`ssh_key_missing`), not fatal. `enforce`: destroy what breaks a lease.
+ * this machine; a missing file is logged (`ssh_key_missing`), not fatal. On a
+ * prifly with "vault-ssh", the save, guard and probe use the vault's
+ * `vast-ssh` entry instead, and this key only when the vault refuses (`run.ts`
+ * `boxRunner`). `enforce`: destroy what breaks a lease.
  * `credit`: the margin kept free of the account's credit, and the runway warnings.
  */
 type Config = {
@@ -107,23 +104,24 @@ export function terminal(
 }
 
 export async function activate(rawApi: ExtensionApi): Promise<() => void> {
+  // prifly's database where it has one for extensions, else this folder's files (`store.ts`).
+  const store = storeFor(rawApi, (e, f) => rawApi.log(e, f));
   // Every event the extension logs is written to the boxes' history too (`events.ts`).
-  const history = eventsPath(rawApi.folder);
   const api = withRecorder(
     rawApi,
-    recorder(history, (e, f) => rawApi.log(e, f)),
+    recorder(store, (e, f) => rawApi.log(e, f)),
   );
-  await seedFromHostLog(history, hostLogFolder(api.folder), "vastai").catch((caught: unknown) =>
+  await seedFromHostLog(store, hostLogFolder(api.folder), "vastai").catch((caught: unknown) =>
     api.log("history_seed_failed", {
       message: caught instanceof Error ? caught.message : String(caught),
     }),
   );
-  const observer = new Observer(history);
+  const observer = new Observer(store);
   const config = await readConfig(api.folder);
   await logKeyProblem(api, config.sshKey);
   // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
   const keys = () => readApiKeys(process.env, homedir(), api.vault);
-  const enforcer = new Enforcer(api, config);
+  const enforcer = new Enforcer(api, store, config);
   const labels = new Map<number, string>();
   let listed: readonly Instance[] = [];
   let lastJudged: ReadonlyMap<number, Judged> = new Map();
@@ -131,10 +129,10 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   // The list drops a GPU sample now and then (see load.ts): the card shows the last real one.
   const gpuHold = new GpuHold();
   panelDeps = {
-    folder: api.folder,
+    store,
     owner: config.owner,
     sessions: () => api.sessions(),
-    charges: new ChargeCache(chargesPath(api.folder), async (day) =>
+    charges: new ChargeCache(store, async (day) =>
       withKeys(await keys(), (key) => fetchDay(key, day)),
     ),
     listed: () => listed,
@@ -190,8 +188,8 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
       );
       const judged = await enforcer.round(boxes, now);
       lastJudged = judged;
-      claims = await readEndpointClaims(api, claims);
-      const leases = await readLeases(leasesPath(api.folder));
+      claims = await readEndpointClaims(api, store, claims);
+      const leases = await readLeases(store);
       const credit = await readCredit(boxes, leases, now);
       if (!stopped) {
         remember(labels, boxes);
@@ -213,7 +211,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   // Absent on a prifly older than "extension tools": the boxes still show.
   api.tools?.register(
     makeTools({
-      folder: api.folder,
+      store,
       owner: () => readOwner(api.folder, process.env),
       sshKey: config.sshKey,
       keys,
@@ -236,7 +234,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     if (hours !== undefined) {
       // From the reader's menu: a box with no lease gets one, so it is kept.
       const label = labels.get(id) ?? "";
-      const lease = await updateLeases(leasesPath(api.folder), (leases) =>
+      const lease = await updateLeases(store, (leases) =>
         extend(leases, { box: id }, hours, Date.now(), { box: id, label }),
       );
       api.log("extended", { instance: id, until: lease.until, by: "reader" });
@@ -277,10 +275,11 @@ function shellOf(
 
 /** The claimed serverless endpoints (`endpoints.ts`); on a failure, logged, the last ones read. */
 function readEndpointClaims(
-  api: Pick<ExtensionApi, "folder" | "log">,
+  api: Pick<ExtensionApi, "log">,
+  store: Store,
   last: ReadonlyMap<number, string>,
 ): Promise<ReadonlyMap<number, string>> {
-  return readClaims(endpointsPath(api.folder))
+  return readClaims(store)
     .then(claimMap)
     .catch((caught: unknown) => {
       api.log("endpoints_read_failed", {

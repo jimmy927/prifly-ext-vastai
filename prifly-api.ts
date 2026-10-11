@@ -200,10 +200,112 @@ export type ExtensionVaultApi = {
    * the manifest's `vault` list does not name it, or its level is not 1.
    */
   read(name: string): Promise<string | null>;
+  /**
+   * Run `argv` — `ssh`, `scp`, `sftp` or `rsync`, by name or full path — with
+   * the vault's `ssh-key` entry `name` handed to it, and get back its exit
+   * code and both streams with every form of the key replaced by
+   * `[vault:<name>]`. The key never reaches the extension: on Linux and macOS
+   * a throwaway `ssh-agent` holds it (`SSH_AUTH_SOCK`); on Windows it is a
+   * file only the user can read, given to `ssh`, `scp` and `sftp` as
+   * `-i <file> -o IdentitiesOnly=yes` and to an `rsync` without an `-e` of
+   * its own as `-e "ssh -i …"`, named in `PRIFLY_SSH_KEY_FILE` and
+   * `GIT_SSH_COMMAND` too, and removed when the command ends.
+   *
+   * The same rules as `read`: the manifest's `vault` list must name the
+   * entry, it must be an `ssh-key`, and its level where the extension lives
+   * must be 1. Anything else, and a program that is not one of the four,
+   * comes back `ok: false` with why, and nothing ran. Only where
+   * `api.features` includes "vault-ssh"; absent on an older prifly: call it
+   * as `api.vault?.ssh?.(...)`.
+   */
+  ssh?(name: string, argv: string[], options?: VaultSshOptions): Promise<VaultSshResult>;
+};
+
+export type VaultSshOptions = {
+  /** Where it runs; the extension's own folder when left out. */
+  cwd?: string;
+  /** Killed after this long: 120 000 by default, at most 600 000. */
+  timeoutMs?: number;
+};
+
+export type VaultSshResult =
+  | {
+      ok: true;
+      /** Null when it was killed for its timeout. */
+      exitCode: number | null;
+      timedOut: boolean;
+      /** Each stream as the command wrote it (the first 4 MB), the key scrubbed out. */
+      stdout: string;
+      stderr: string;
+    }
+  | { ok: false; message: string };
+
+/**
+ * `api.state`: what an extension keeps for itself, in prifly's database
+ * (`packages/extension-api/src/state.ts` in prifly), so it moves with
+ * prifly's data. Documents — one JSON value each, replaced whole, at most
+ * 1 MB — and append-only logs that keep their newest 10,000 entries of up to
+ * 64 KB, each under a name of the extension's own (`^[A-Za-z0-9._-]{1,128}$`).
+ * A log and a document of the same name are separate things.
+ */
+export type ExtensionStateApi = {
+  /** The document `name`, or undefined when there is none. */
+  get<T = unknown>(name: string): Promise<NoInfer<T> | undefined>;
+  /** Replace the document `name` with `value`, in one write. */
+  set(name: string, value: unknown): Promise<void>;
+  /**
+   * Read the document, give it to `fn` (undefined when there is none), and
+   * store what `fn` returns; resolves to that value. Writes to the same name
+   * — `set`, `update`, `delete`, `importOnce` — run one at a time, in the
+   * order they were called. A throw from `fn` stores nothing and rejects with
+   * it; `fn` returning undefined is refused. Never await a write to the same
+   * name inside `fn`: neither would ever finish.
+   */
+  update<T>(name: string, fn: (current: T | undefined) => T | Promise<T>): Promise<T>;
+  /** Remove the document `name`; true when there was one. */
+  delete(name: string): Promise<boolean>;
+  /** The names of this extension's documents, sorted. */
+  list(): Promise<string[]>;
+  /**
+   * Bring state in from somewhere else once. When the document `name`
+   * exists, it is returned and `make` is not called. Otherwise `make`'s value
+   * is stored and returned; undefined from `make` stores nothing, so a later
+   * start asks again. Runs in line with the name's other writes.
+   */
+  importOnce<T>(
+    name: string,
+    make: () => T | undefined | Promise<T | undefined>,
+  ): Promise<T | undefined>;
+  /** Add `entry` to the end of the log `name`; resolves to its `seq`. */
+  append(name: string, entry: unknown): Promise<number>;
+  /**
+   * The log `name`'s entries, oldest first. `after` keeps those with a
+   * larger `seq`, `since` those appended at or after an epoch ms, and
+   * `limit` the newest that many of what is left.
+   */
+  read<T = unknown>(
+    name: string,
+    options?: ExtensionLogRead,
+  ): Promise<ExtensionLogEntry<NoInfer<T>>[]>;
+};
+
+export type ExtensionLogRead = { after?: number; since?: number; limit?: number };
+
+export type ExtensionLogEntry<T = unknown> = {
+  /** Grows with each entry appended, across all logs: compare, never count on it being dense. */
+  seq: number;
+  /** Epoch ms it was appended. */
+  at: number;
+  entry: T;
 };
 
 export type ExtensionApi = {
-  /** What this prifly host can do beyond the base contract: "pick-amount-limit", "pick-links", "pick-cells". Absent on an older one. */
+  /**
+   * What this prifly host can do beyond the base contract, by name:
+   * "pick-amount-limit", "pick-links", "pick-cells", "vault-ssh"
+   * (`api.vault.ssh`), "state" (`api.state`), among others. Absent on an
+   * older one.
+   */
   features?: readonly string[];
   /**
    * The vault's API tokens this extension's manifest names under `vault`.
@@ -243,6 +345,12 @@ export type ExtensionApi = {
    * `api.tools?.register(...)`; without it the extension is still a box display.
    */
   tools?: ExtensionToolsApi;
+  /**
+   * What the extension keeps for itself — JSON documents and append-only
+   * logs — in prifly's database, so it moves with prifly's data. Where
+   * `api.features` includes "state"; absent on an older prifly.
+   */
+  state?: ExtensionStateApi;
   /** The sessions on this machine the host knows now. */
   sessions(): ExtensionSession[];
   /** A line in the host's log, under `ext.<id>.<event>`. */

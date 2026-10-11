@@ -9,15 +9,15 @@
  * 39180 and 38596, with Vast's Python SDK.
  *
  * So a session claims an endpoint with `vast_claim_endpoint` once it makes or
- * starts using one, and the claim is kept here, in `endpoints.json`, under
- * the same lock as the leases. A later claim of the same endpoint by another
- * session replaces it: the endpoint shows on whoever uses it now.
+ * starts using one, and the claim is kept in the extension's store
+ * (`store.ts`: prifly's `api.state`, or `endpoints.json` on an older prifly),
+ * changed one claim at a time as the leases are. A later claim of the same
+ * endpoint by another session replaces it: the endpoint shows on whoever uses
+ * it now.
  */
 
-import { rename } from "node:fs/promises";
-import { join } from "node:path";
 import { z } from "zod";
-import { lock } from "./leases";
+import type { Store } from "./store";
 
 const ClaimSchema = z.object({
   endpoint: z.number().int(),
@@ -32,10 +32,6 @@ export type Claim = z.infer<typeof ClaimSchema>;
 
 const FileSchema = z.object({ endpoints: z.array(ClaimSchema) });
 
-export function endpointsPath(folder: string): string {
-  return join(folder, "endpoints.json");
-}
-
 /** A serverless worker's label: `rj-judge:39180:49751`. */
 const WORKER = /^(.+):(\d+):(\d+)$/;
 
@@ -49,10 +45,9 @@ export function workerOf(label: string): Worker | null {
   return { endpoint, endpointId: Number(id), group: Number(group) };
 }
 
-export async function readClaims(path: string): Promise<Claim[]> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) return [];
-  return FileSchema.parse(await file.json()).endpoints;
+export async function readClaims(store: Store): Promise<Claim[]> {
+  const kept = await store.get("endpoints");
+  return kept === undefined ? [] : FileSchema.parse(kept).endpoints;
 }
 
 /** The session each claimed endpoint is for, by endpoint id. */
@@ -61,17 +56,11 @@ export function claimMap(claims: readonly Claim[]): Map<number, string> {
 }
 
 /** Claim `endpoint` for `session`, replacing any earlier claim of it. */
-export async function claimEndpoint(path: string, claim: Claim): Promise<Claim | null> {
-  const release = await lock(`${path}.lock`);
-  try {
-    const claims = await readClaims(path);
+export function claimEndpoint(store: Store, claim: Claim): Promise<Claim | null> {
+  return store.update("endpoints", (kept) => {
+    const claims = kept === undefined ? [] : FileSchema.parse(kept).endpoints;
     const earlier = claims.find((c) => c.endpoint === claim.endpoint) ?? null;
     const endpoints = [...claims.filter((c) => c.endpoint !== claim.endpoint), claim];
-    const temp = `${path}.${process.pid}.tmp`;
-    await Bun.write(temp, `${JSON.stringify({ endpoints }, null, 2)}\n`);
-    await rename(temp, path);
-    return earlier;
-  } finally {
-    await release();
-  }
+    return { value: { endpoints }, result: earlier };
+  });
 }

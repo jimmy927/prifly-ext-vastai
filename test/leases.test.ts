@@ -8,7 +8,6 @@ import {
   extend,
   type Lease,
   leaseOf,
-  leasesPath,
   MAX_AHEAD_MS,
   raiseBudget,
   readLeases,
@@ -16,6 +15,7 @@ import {
   UNUSED_BOOKING_MS,
   updateLeases,
 } from "../leases";
+import { filePath, fileStore } from "../store";
 
 const H = 3_600_000;
 const NOW = 1_800_000_000_000;
@@ -155,28 +155,27 @@ describe("tidy", () => {
 });
 
 test("updateLeases writes the file whole, under the lock, in parallel", async () => {
-  const path = leasesPath(await mkdtemp(join(tmpdir(), "vastlease-")));
+  const store = fileStore(await mkdtemp(join(tmpdir(), "vastlease-")));
   await Promise.all(
     Array.from({ length: 20 }, (_, i) =>
-      updateLeases(path, (leases) => book(leases, `s-0123abcd/b${i}`, 1, NOW)),
+      updateLeases(store, (leases) => book(leases, `s-0123abcd/b${i}`, 1, NOW)),
     ),
   );
-  expect(await readLeases(path)).toHaveLength(20);
+  expect(await readLeases(store)).toHaveLength(20);
 });
 
 describe("budget", () => {
   test("a booking carries the confirmed budget, and an older file reads as none", async () => {
     expect(book([], LABEL, 2, NOW, 7.5).result.budget).toBe(7.5);
     const folder = await mkdtemp(join(tmpdir(), "vastai-leases-"));
-    const path = leasesPath(folder);
     // A lease written before budgets existed has no `budget` key.
     await Bun.write(
-      path,
+      filePath(folder, "leases"),
       JSON.stringify({
         leases: [{ label: LABEL, box: 7, bookedAt: NOW, until: NOW + H, cancelled: false }],
       }),
     );
-    expect((await readLeases(path))[0]?.budget).toBeNull();
+    expect((await readLeases(fileStore(folder)))[0]?.budget).toBeNull();
   });
 
   test("raiseBudget sets the confirmed amount and keeps the rest", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type Lease, leasesPath, readLeases, updateLeases } from "../leases";
+import { type Lease, readLeases, updateLeases } from "../leases";
+import { fileStore } from "../store";
 import { ctxFor, H, LABEL, NOW, offer, setup, vast } from "./fake-vast";
 
 const LIMIT = ["pick-amount-limit"];
@@ -36,7 +37,7 @@ async function withOtherLease(folder: string) {
     cancelled: false,
     budget: 50,
   };
-  await updateLeases(leasesPath(folder), () => ({ leases: [other], result: null }));
+  await updateLeases(fileStore(folder), () => ({ leases: [other], result: null }));
 }
 
 describe("vast_rent and the account's credit", () => {
@@ -89,7 +90,7 @@ describe("vast_rent and the account's credit", () => {
     expect(cards[1]?.rows).toEqual([["$60", "$54", "$6.00"]]);
     expect(text).toContain("Nothing was rented");
     expect(fake.puts).toHaveLength(0);
-    expect((await readLeases(leasesPath(folder))).map((l) => l.label)).toEqual([
+    expect((await readLeases(fileStore(folder))).map((l) => l.label)).toEqual([
       "jimmy/s-99999999/other",
     ]);
   });
@@ -126,7 +127,7 @@ describe("vast_extend and the account's credit", () => {
       cancelled: false,
       budget: 10,
     };
-    await updateLeases(leasesPath(folder), () => ({ leases: [lease], result: null }));
+    await updateLeases(fileStore(folder), () => ({ leases: [lease], result: null }));
     const { ctx, cards } = ctxFor([{ row: 0, amount: 30 }]);
     await tool("vast_extend").call({ name: "job1", hours: 10 }, ctx);
     // $2 spent; $20 free: 18.18 by the share, 20 − 3 × 2 = 14 by the hours.
@@ -137,6 +138,6 @@ describe("vast_extend and the account's credit", () => {
     expect(cards[0]?.amount?.limit?.ack).toBe(
       "Raise anyway: I will top up before the credit runs out",
     );
-    expect((await readLeases(leasesPath(folder)))[0]?.budget).toBe(30);
+    expect((await readLeases(fileStore(folder)))[0]?.budget).toBe(30);
   });
 });

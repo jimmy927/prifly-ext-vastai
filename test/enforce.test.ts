@@ -3,9 +3,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type EnforceDeps, Enforcer, restDeps } from "../enforce";
-import { book, leasesPath, readLeases, updateLeases } from "../leases";
+import { book, readLeases, updateLeases } from "../leases";
 import type { ExtensionApi } from "../prifly-api";
+import { fileStore } from "../store";
 import type { Instance } from "../vast-api";
+import { fakeVault } from "./fake-state";
 
 const NOW = Date.now();
 const H = 3_600_000;
@@ -57,7 +59,7 @@ const box = (id: number, label: string, startedHoursAgo = 2): Instance => ({
 
 test("with enforcement off, a box without a lease is only said to be due", async () => {
   const { api, notices } = await host();
-  const enforcer = new Enforcer(api, config(false), fakeDestroy().deps);
+  const enforcer = new Enforcer(api, fileStore(api.folder), config(false), fakeDestroy().deps);
   const judged = await enforcer.round([box(1, "jimmy/s-0123abcd/lc-box1"), box(2, "lc-box3")], NOW);
   expect(judged.get(1)?.verdict).toEqual({ kind: "due", reason: "no lease" });
   expect(judged.get(2)?.verdict).toEqual({ kind: "unmanaged" });
@@ -74,22 +76,22 @@ test("with enforcement off, a box without a lease is only said to be due", async
 
 test("a booking binds to its box, and the box then holds the lease", async () => {
   const { api, folder } = await host();
-  await updateLeases(leasesPath(folder), (leases) =>
+  await updateLeases(fileStore(folder), (leases) =>
     book(leases, "jimmy/s-0123abcd/lc-box1", 2, NOW),
   );
-  const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+  const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
   const judged = await enforcer.round([box(1, "jimmy/s-0123abcd/lc-box1", 0)], NOW);
   expect(judged.get(1)?.verdict.kind).toBe("leased");
-  expect((await readLeases(leasesPath(folder)))[0]?.box).toBe(1);
+  expect((await readLeases(fileStore(folder)))[0]?.box).toBe(1);
 });
 
 test("with enforcement on, a due box is destroyed and its lease dropped", async () => {
   const { api, folder, notices } = await host();
-  await updateLeases(leasesPath(folder), (leases) =>
+  await updateLeases(fileStore(folder), (leases) =>
     book(leases, "jimmy/s-0123abcd/lc-box1", 1, NOW - 3 * H),
   );
   const fake = fakeDestroy();
-  const enforcer = new Enforcer(api, config(true), fake.deps);
+  const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fake.deps);
   const boxes = [box(1, "jimmy/s-0123abcd/lc-box1")];
   await enforcer.round(boxes, NOW);
   // Bound now, and over by two hours: due. The take-down runs in the background.
@@ -100,13 +102,13 @@ test("with enforcement on, a due box is destroyed and its lease dropped", async 
   expect(notices.map((n) => n.text)).toContain(
     "Destroyed lc-box1 (lease over); it no longer bills.",
   );
-  expect(await readLeases(leasesPath(folder))).toEqual([]);
+  expect(await readLeases(fileStore(folder))).toEqual([]);
   expect(fake.calls).toEqual([1]);
 });
 
 test("the older label is still this owner's, and is enforced", async () => {
   const { api, notices } = await host();
-  const enforcer = new Enforcer(api, config(false), fakeDestroy().deps);
+  const enforcer = new Enforcer(api, fileStore(api.folder), config(false), fakeDestroy().deps);
   const judged = await enforcer.round([box(1, "s-0123abcd/lc-box1")], NOW);
   expect(judged.get(1)?.verdict).toEqual({ kind: "due", reason: "no lease" });
   expect(notices.map((n) => n.text)).toEqual([
@@ -117,7 +119,7 @@ test("the older label is still this owner's, and is enforced", async () => {
 test("another owner's box and an unknown session's box are never destroyed", async () => {
   const { api, folder, notices } = await host();
   // Leases that would be long over, had these boxes been this prifly's.
-  await updateLeases(leasesPath(folder), (leases) => ({
+  await updateLeases(fileStore(folder), (leases) => ({
     leases: [
       ...book(leases, "anna/s-0123abcd/lc-box1", 1, NOW - 3 * H).leases,
       ...book([], "jimmy/s-99999999/lc-box2", 1, NOW - 3 * H).leases,
@@ -125,7 +127,7 @@ test("another owner's box and an unknown session's box are never destroyed", asy
     result: null,
   }));
   const fake = fakeDestroy();
-  const enforcer = new Enforcer(api, config(true), fake.deps);
+  const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fake.deps);
   const boxes = [box(1, "anna/s-0123abcd/lc-box1"), box(2, "jimmy/s-99999999/lc-box2")];
   for (let round = 0; round < 3; round += 1) {
     const judged = await enforcer.round(boxes, NOW + round * 60_000);
@@ -151,7 +153,7 @@ const billing = (id: number, label: string, hoursAgo: number, rate: number): Ins
 
 async function budgeted(budget: number, hours: number) {
   const ctx = await host();
-  await updateLeases(leasesPath(ctx.folder), (leases) =>
+  await updateLeases(fileStore(ctx.folder), (leases) =>
     book(leases, "jimmy/s-0123abcd/lc-box1", hours, NOW - 2 * H, budget),
   );
   return ctx;
@@ -161,7 +163,7 @@ describe("budget", () => {
   test("90 % of the budget is told once, naming the session", async () => {
     const { api, folder, notices } = await budgeted(10, 20);
     const fake = fakeDestroy();
-    const enforcer = new Enforcer(api, config(true), fake.deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fake.deps);
     // Two hours at 4.6 an hour: 9.20 of 10.
     const boxes = [billing(1, "jimmy/s-0123abcd/lc-box1", 2, 4.6)];
     await enforcer.round(boxes, NOW);
@@ -171,22 +173,22 @@ describe("budget", () => {
     expect(notices[0]?.session).toBe("0123abcd");
     expect(notices[0]?.text).toContain("lc-box1 has cost $9.20 of $10");
     expect(fake.calls).toEqual([]);
-    expect((await readLeases(leasesPath(folder)))[0]?.budget).toBe(10);
+    expect((await readLeases(fileStore(folder)))[0]?.budget).toBe(10);
   });
 
   test("below 90 % nothing is said", async () => {
     const { api, notices } = await budgeted(10, 20);
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     await enforcer.round([billing(1, "jimmy/s-0123abcd/lc-box1", 2, 4)], NOW);
     expect(notices).toEqual([]);
   });
 
   test("a raised budget is told again when it is nearly spent", async () => {
     const { api, folder, notices } = await budgeted(10, 20);
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     const boxes = [billing(1, "jimmy/s-0123abcd/lc-box1", 2, 4.6)];
     await enforcer.round(boxes, NOW);
-    await updateLeases(leasesPath(folder), (leases) => ({
+    await updateLeases(fileStore(folder), (leases) => ({
       leases: leases.map((l) => ({ ...l, budget: 20 })),
       result: null,
     }));
@@ -201,7 +203,7 @@ describe("budget", () => {
   test("at 100 % the box is saved and destroyed, reason budget reached", async () => {
     const { api, folder, notices } = await budgeted(10, 20);
     const fake = fakeDestroy();
-    const enforcer = new Enforcer(api, config(true), fake.deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fake.deps);
     // The lease has 18 hours left; 5.2 an hour for 2 hours is 10.40.
     const boxes = [billing(1, "jimmy/s-0123abcd/lc-box1", 2, 5.2)];
     const judged = await enforcer.round(boxes, NOW);
@@ -213,13 +215,13 @@ describe("budget", () => {
       "Destroyed lc-box1 (budget reached); it no longer bills.",
     );
     expect(fake.calls).toEqual([1]);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("with enforcement off it only says it would destroy", async () => {
     const { api, notices } = await budgeted(10, 20);
     const fake = fakeDestroy();
-    const enforcer = new Enforcer(api, config(false), fake.deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(false), fake.deps);
     await enforcer.round([billing(1, "jimmy/s-0123abcd/lc-box1", 2, 5.2)], NOW);
     await Bun.sleep(50);
     expect(fake.calls).toEqual([]);
@@ -230,7 +232,7 @@ describe("budget", () => {
 
   test("the lease end shown is held to the hour the budget runs out", async () => {
     const { api } = await budgeted(10, 20);
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     // 4 an hour, started 1 hour ago: 10 dollars last until 1.5 hours from now.
     const judged = await enforcer.round([billing(1, "jimmy/s-0123abcd/lc-box1", 1, 4)], NOW);
     expect(judged.get(1)?.until).toBe(Math.floor(NOW + 1.5 * H));
@@ -240,10 +242,10 @@ describe("budget", () => {
 
   test("a lease without a budget never ends on cost", async () => {
     const { api, folder } = await host();
-    await updateLeases(leasesPath(folder), (leases) =>
+    await updateLeases(fileStore(folder), (leases) =>
       book(leases, "jimmy/s-0123abcd/lc-box1", 20, NOW - 2 * H),
     );
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     const judged = await enforcer.round([billing(1, "jimmy/s-0123abcd/lc-box1", 2, 500)], NOW);
     expect(judged.get(1)?.verdict.kind).toBe("leased");
   });
@@ -261,7 +263,7 @@ describe("the host's end date", () => {
 
   async function leased() {
     const ctx = await host();
-    await updateLeases(leasesPath(ctx.folder), (leases) =>
+    await updateLeases(fileStore(ctx.folder), (leases) =>
       book(leases, "jimmy/s-0123abcd/lc-box1", 21, NOW - H),
     );
     return ctx;
@@ -284,7 +286,7 @@ describe("the host's end date", () => {
         return { code: 0, out: "", err: "" };
       },
     };
-    const enforcer = new Enforcer(api, config(true), deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), deps);
     const boxes = [hosted(20 * 60_000)];
     await enforcer.round(boxes, NOW); // binds the lease
     const judged = await enforcer.round(boxes, NOW);
@@ -298,13 +300,16 @@ describe("the host's end date", () => {
     expect(notices.map((n) => n.text)).toContain(
       "Destroyed lc-box1 (the host's end date is near); it no longer bills.",
     );
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("with enforcement off it only says it would destroy", async () => {
     const { api, notices } = await leased();
     const fake = fakeDestroy();
-    await new Enforcer(api, config(false), fake.deps).round([hosted(20 * 60_000)], NOW);
+    await new Enforcer(api, fileStore(api.folder), config(false), fake.deps).round(
+      [hosted(20 * 60_000)],
+      NOW,
+    );
     await Bun.sleep(50);
     expect(fake.calls).toEqual([]);
     expect(notices.map((n) => n.text)).toEqual([
@@ -315,7 +320,7 @@ describe("the host's end date", () => {
   test("a box that ends in more than 30 minutes is left alone, as is one with no end date", async () => {
     const { api } = await leased();
     const fake = fakeDestroy();
-    const enforcer = new Enforcer(api, config(true), {
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), {
       ...fake.deps,
       onBox: async () => ({ code: 0, out: "", err: "" }),
     });
@@ -331,7 +336,7 @@ describe("the host's end date", () => {
   async function guardSent(guardScript?: () => Promise<string>): Promise<string[]> {
     const { api } = await leased();
     const scripts: string[] = [];
-    const enforcer = new Enforcer(api, config(true), {
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), {
       ...fakeDestroy().deps,
       ...(guardScript === undefined ? {} : { guardScript }),
       onBox: async (_target, _key, command, _timeout, stdin) => {
@@ -355,6 +360,32 @@ describe("the host's end date", () => {
     expect(await guardSent(async () => "#!/bin/sh\r\necho hi\r\n")).toEqual([
       "#!/bin/sh\necho hi\n",
     ]);
+  });
+
+  test('with "vault-ssh", the guard goes over prifly\'s vault ssh, with no key of ours', async () => {
+    const { api: base } = await leased();
+    const { vault, calls } = fakeVault({
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    });
+    const api = { ...base, features: ["vault-ssh"], vault } as unknown as ExtensionApi;
+    const enforcer = new Enforcer(
+      api,
+      fileStore(api.folder),
+      { ...config(true), sshKey: "/home/x/.ssh/key" },
+      { ...fakeDestroy().deps, guardScript: async () => "#!/bin/sh\necho guard\n" },
+    );
+    await enforcer.round([hosted(null)], NOW);
+    for (let i = 0; i < 50 && calls.length === 0; i += 1) await Bun.sleep(20);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.name).toBe("vast-ssh");
+    expect(calls[0]?.argv).not.toContain("/home/x/.ssh/key");
+    const command = calls[0]?.argv.at(-1) ?? "";
+    expect(command).toContain(Buffer.from("#!/bin/sh\necho guard\n").toString("base64"));
+    expect(command).toContain("cat > $d/guard.sh");
   });
 });
 
@@ -382,7 +413,7 @@ describe("the account's credit", () => {
 
   test("the runway is told once per warning, to the session that owns a box, and again after a top-up", async () => {
     const { api, notices } = await host();
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     const boxes = [running(1, "jimmy/s-0123abcd/job1", 2)];
     // $20 at $2/h: 10 h, under the 12 h warning.
     enforcer.creditRound({ credit: 20, threshold: null }, boxes, [], NOW);
@@ -413,7 +444,7 @@ describe("the account's credit", () => {
 
   test("a box whose budget runs past the credit's end is told to its session, once per budget", async () => {
     const { api, notices } = await host();
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     const boxes = [running(1, "jimmy/s-0123abcd/job1", 2)];
     const leases = [
       {
@@ -437,7 +468,7 @@ describe("the account's credit", () => {
 
   test("with nothing of this prifly's billing, a low runway goes to the status bar", async () => {
     const { api, notices } = await host();
-    const enforcer = new Enforcer(api, config(true), fakeDestroy().deps);
+    const enforcer = new Enforcer(api, fileStore(api.folder), config(true), fakeDestroy().deps);
     enforcer.creditRound({ credit: 1, threshold: null }, [running(9, "rj-judge:1:2", 2)], [], NOW);
     expect(notices).toHaveLength(1);
     expect(notices[0]?.session).toBeUndefined();

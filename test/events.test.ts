@@ -2,15 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  eventOfLog,
-  eventsPath,
-  liveOf,
-  Observer,
-  readEvents,
-  recorder,
-  seedFromHostLog,
-} from "../events";
+import { eventOfLog, liveOf, Observer, readEvents, recorder, seedFromHostLog } from "../events";
+import { fileStore } from "../store";
 import type { Instance } from "../vast-api";
 
 const NOW = 1_791_200_000_000;
@@ -64,10 +57,10 @@ describe("eventOfLog", () => {
 
 describe("recorder", () => {
   test("logs as before and appends the events to the history", async () => {
-    const path = eventsPath(await folder());
+    const store = fileStore(await folder());
     const logged: string[] = [];
     const log = recorder(
-      path,
+      store,
       (event) => logged.push(event),
       () => NOW,
     );
@@ -75,7 +68,7 @@ describe("recorder", () => {
     log("extended", { instance: 1, until: NOW + 3_600_000, by: "session" });
     await Bun.sleep(20);
     expect(logged).toEqual(["guard", "extended"]);
-    expect(await readEvents(path)).toEqual([
+    expect(await readEvents(store)).toEqual([
       { at: NOW, kind: "extended", box: 1, until: NOW + 3_600_000, by: "session" },
     ]);
   });
@@ -90,8 +83,8 @@ describe("Observer", () => {
   });
 
   test("a box seen first appears with its start and rate; one no longer listed is gone", async () => {
-    const path = eventsPath(await folder());
-    const observer = new Observer(path);
+    const store = fileStore(await folder());
+    const observer = new Observer(store);
     expect(await observer.observe([box(1, "a")], NOW)).toEqual([
       { at: NOW, kind: "appeared", box: 1, label: "a", start: NOW - 60_000, rate: 0.5 },
     ]);
@@ -100,13 +93,13 @@ describe("Observer", () => {
       { at: NOW + 2, kind: "appeared", box: 2, label: "", start: NOW - 60_000, rate: 0.5 },
       { at: NOW + 2, kind: "gone", box: 1 },
     ]);
-    expect(liveOf(await readEvents(path))).toEqual(new Set([2]));
+    expect(liveOf(await readEvents(store))).toEqual(new Set([2]));
   });
 
   test("after a restart, the live boxes are read back from the file", async () => {
-    const path = eventsPath(await folder());
-    await new Observer(path).observe([box(1)], NOW);
-    expect(await new Observer(path).observe([], NOW + 5)).toEqual([
+    const store = fileStore(await folder());
+    await new Observer(store).observe([box(1)], NOW);
+    expect(await new Observer(store).observe([], NOW + 5)).toEqual([
       { at: NOW + 5, kind: "gone", box: 1 },
     ]);
   });
@@ -130,12 +123,12 @@ describe("seedFromHostLog", () => {
       `{"at":"2026-10-05T07:04:31.988Z","level":"info","event":"ext.vastai.destroyed","instance":54,"reason":"cancelled"}\n`,
     );
     await writeFile(join(logs, "ui-build.log"), `{"event":"ext.vastai.destroyed","instance":1}`);
-    const path = eventsPath(dir);
-    expect(await seedFromHostLog(path, logs, "vastai")).toBe(2);
-    expect((await readEvents(path)).map((e) => [e.kind, e.box])).toEqual([
+    const store = fileStore(dir);
+    expect(await seedFromHostLog(store, logs, "vastai")).toBe(2);
+    expect((await readEvents(store)).map((e) => [e.kind, e.box])).toEqual([
       ["rented", 54],
       ["destroyed", 54],
     ]);
-    expect(await seedFromHostLog(path, logs, "vastai")).toBe(0);
+    expect(await seedFromHostLog(store, logs, "vastai")).toBe(0);
   });
 });

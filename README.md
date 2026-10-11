@@ -38,18 +38,19 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
   **Destroy…**, which asks again on the card. A serverless endpoint's worker
   (labelled `<endpoint>:<endpoint id>:<group id>`) goes by its endpoint's
   name and shows on the session that claimed the endpoint with
-  `vast_claim_endpoint` (kept in `endpoints.json`); unclaimed, its card says
+  `vast_claim_endpoint` (kept in the extension's store, see
+  [Where it keeps its state](#where-it-keeps-its-state)); unclaimed, its card says
   so. **Go to session** needs a
   prifly whose `api.features` include `panel-open-session`; on an older one
   the button is left out.
 - **Shows where the money went.** Below the cards, the panel has three parts:
   - What the account spent per day or week, stacked by session or repository.
     The amounts are Vast.ai's own charges, fetched one UTC day at a time and
-    kept in `charges.json`.
+    kept in the extension's store.
   - Who spent it, sorted by dollars, one segment per box.
   - A timeline of every box: when it started, each extension of its lease,
     the lease's end, and how it ended. This comes from the boxes' history in
-    `events.jsonl`. On first run, the history is seeded from what prifly's log
+    the extension's store. On first run, the history is seeded from what prifly's log
     still holds, so it starts about two days back.
 
 Everything it needs comes with it: the tools, the hook, the skill and the
@@ -203,9 +204,10 @@ you confirmed on the rental card.
 - **Booking.** `vast_rent` books the lease just before it creates the box,
   with the budget you confirmed (not the one the session suggested) and an end
   of 24 hours at most, held to the hour the budget runs out. `vast_extend`
-  extends it and `vast_cancel` ends it. Leases are kept in `leases.json` in
-  this folder, under a lock. A lease with no `budget` key (written before
-  budgets) reads as having none.
+  extends it and `vast_cancel` ends it. Leases are kept in the extension's
+  store (see [Where it keeps its state](#where-it-keeps-its-state)), changed
+  one at a time. A lease with no `budget` key (written before budgets) reads
+  as having none.
 - **The budget.** Each minute the extension works out what each box has cost:
   `dph_total` (Vast.ai's hourly rate, disk included) times the hours since the
   box started (`spend.ts`); nothing is stored. At 90 % of the budget you are
@@ -343,6 +345,36 @@ ssh uses your defaults and `~/.ssh/config`, and a box that wants another key
 answers `Permission denied (publickey)`. The first connection to a box trusts
 its host key (`StrictHostKeyChecking=accept-new`), as renting it already did.
 A key that changes later is still refused.
+
+On a prifly whose `api.features` include `vault-ssh`, keep the key in
+prifly's vault instead: add an **SSH key** entry named `vast-ssh` (the
+manifest names it under `vault`) at level 1. The save, the on-box guard and
+the broken-box probe then run through `api.vault.ssh("vast-ssh", …)`: prifly
+hands ssh the key, and the extension never sees it nor passes an `-i` of its
+own. When the vault says no (no such entry, another kind, not level 1), that
+is logged once (`vault_ssh_refused`) and `sshKey` is used, as before. The
+terminal a click opens, and the `ssh …` line the tools print, still name
+`sshKey`: those run in your terminal, not in the extension.
+
+### Where it keeps its state
+
+The leases, the endpoint claims, the charges cache and the boxes' history
+(`store.ts`):
+
+- On a prifly whose `api.features` include `state`, in prifly's database
+  (`api.state`): documents `leases`, `endpoints` and `charges`, and a log
+  `events`. They move with prifly's data to another host (`prifly-move`);
+  this folder does not. The first start brings in `leases.json`,
+  `endpoints.json`, `charges.json` and `events.jsonl` from this folder, once
+  each (`importOnce`), so a running box keeps its lease; those files are then
+  left as they are and never written again. Delete them by hand once you are
+  happy.
+- On an older prifly, those four files in this folder, as before: a lease or
+  claim is changed under a lock file and written whole with a rename.
+
+Either way, leases that cannot be read (the database failing, a file that
+does not parse) fail the minute's round: nothing is judged lease-less, so
+nothing is destroyed for it.
 
 ### Renting from the right-click menu
 
@@ -523,6 +555,8 @@ type-checks on its own.
 | `tools?.register(tools)` | Serves MCP tools to every session. Each tool has a `name`, a `description`, a JSON-schema `inputSchema` and `call(args, ctx)`; `ctx.session` is the caller's full session id, `ctx.pick(card)` shows prifly's pick card (optionally with an editable `amount`) and resolves to `{ row, amount }` or null, and `ctx.signal` aborts when the session goes away. Absent on an older prifly: call it as `api.tools?.register(...)`. |
 | `notify?(text, options)` | Tells the reader something now, under the extension's name; `session` makes a click open that session. Absent on an older prifly. |
 | `vault?.read(name)` | The token of prifly's vault entry `name`, or null: only an **API token** entry at level 1, and only one your manifest names under `"vault": ["<name>"]`. Read it each time you need it. Absent on an older prifly: call it as `api.vault?.read(...)` and keep a fallback. |
+| `vault?.ssh?.(name, argv, options)` | Runs `ssh`, `scp`, `sftp` or `rsync` with the vault's **SSH key** entry `name` handed over, and resolves to `{ ok: true, exitCode, timedOut, stdout, stderr }` or `{ ok: false, message }` when nothing ran. Pass no `-i` of your own. Where `features` has `vault-ssh`. |
+| `state?` | JSON documents (`get`, `set`, `update`, `importOnce`, …) and append-only logs (`append`, `read`) in prifly's database, so they move with its data. Where `features` has `state`. |
 | `paths` | The folders your programs are in: your `bin` and your venv's `bin`. This extension ships neither. |
 
 Each item you show is `{ key, icon, label, tone, details }`:
@@ -739,14 +773,15 @@ prompt, or your skill.
 | `tools.ts`, `rent.ts`, `tool-kit.ts` | The MCP tools sessions rent, extend, cancel and inspect boxes with |
 | `offers.ts` | The public marketplace search and one offer's price, over `GET /api/v0/bundles/` |
 | `hooks/hooks.json`, `hooks/vast-guard.ts` | The plugin's `PreToolUse` hook that refuses the CLI's writes |
-| `run.ts` | Running commands on a box over ssh |
+| `run.ts` | Running commands on a box over ssh: through prifly's vault (`vast-ssh`) where it can, else with `sshKey` |
 | `vast-api.ts` | Vast.ai's REST API: the box list (read tolerantly with zod), create, logs, destroy |
 | `prifly-api.ts` | A copy of prifly's extension contract |
 | `prompt.md` | Instructions added to every session prifly runs |
 | `skills/vastai/SKILL.md` | The Claude Code skill: money and budgets, the tools, cleanup, choosing offers, the ssh traps |
 | `.claude-plugin/plugin.json`, `marketplace.json` | Makes the folder a Claude Code plugin, and installable without prifly |
 | `owner.ts` | The label owner, from `config.json` or `$USER`, for the extension and its tools alike |
-| `events.ts`, `timeline.ts` | The boxes' history (`events.jsonl`): rents, extensions, cancels, destroys, boxes appearing and going; folded into the timeline |
-| `charges.ts` | What each box cost per UTC day, from `GET /api/v0/charges/`, cached in `charges.json` |
+| `store.ts` | Where the state is kept: prifly's `api.state`, with the old files brought in once, or the files on an older prifly |
+| `events.ts`, `timeline.ts` | The boxes' history (the store's `events`): rents, extensions, cancels, destroys, boxes appearing and going; folded into the timeline |
+| `charges.ts` | What each box cost per UTC day, from `GET /api/v0/charges/`, cached in the store's `charges` |
 | `spend-panel.ts`, `repo.ts`, `panel/` | The spend panel: its `api/data` answer (groups by session and repository) and its page |
 | `config.example.json` | Optional settings: `sshKey` for the terminal and the leases' ssh, `refreshSeconds`, `enforce`, `owner` (else `$USER`), `credit` |

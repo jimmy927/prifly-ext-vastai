@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { claimMap, endpointsPath, readClaims, workerOf } from "../endpoints";
+import { claimMap, readClaims, workerOf } from "../endpoints";
 import { boxCards, sessionKeyOf } from "../fleet";
 import { show } from "../index";
 import { GpuHold } from "../load";
 import type { Decoration } from "../prifly-api";
+import { fileStore } from "../store";
 import { ctxFor, NOW, SESSION, setup, vast } from "./fake-vast";
 
 const OTHER = "e5636c90-8276-45ce-8f12-367136e63033";
@@ -27,7 +28,7 @@ describe("vast_claim_endpoint", () => {
     const { tool, folder } = await setup(fake);
     const text = await tool("vast_claim_endpoint").call({ endpoint_id: 39180 }, ctxFor([]).ctx);
     expect(text).toBe("Endpoint rj-judge (39180) is this session's. It has 1 worker(s) now.");
-    const claims = await readClaims(endpointsPath(folder));
+    const claims = await readClaims(fileStore(folder));
     expect(claims).toEqual([{ endpoint: 39180, name: "rj-judge", session: SESSION, at: NOW }]);
   });
 
@@ -40,7 +41,7 @@ describe("vast_claim_endpoint", () => {
     );
     const text = await tool("vast_claim_endpoint").call({ endpoint_id: 38596 }, ctx);
     expect(text).toContain("It was session e5636c90's until now.");
-    expect(claimMap(await readClaims(endpointsPath(folder))).get(38596)).toBe(SESSION);
+    expect(claimMap(await readClaims(fileStore(folder))).get(38596)).toBe(SESSION);
   });
 });
 

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { type EnforceDeps, Enforcer } from "../enforce";
-import { leasesPath, readLeases } from "../leases";
+import { readLeases } from "../leases";
 import type { ExtensionApi } from "../prifly-api";
 import { withSshRepair } from "../rent";
+import { fileStore } from "../store";
 import type { Instance } from "../vast-api";
 import { ctxFor, H, LABEL, NOW, type Offer, offer, SESSION, setup, vast } from "./fake-vast";
 
@@ -56,7 +57,12 @@ function enforcer(stage: Stage, doubles: Partial<EnforceDeps>) {
     get: stage.fake.get,
     ...doubles,
   };
-  const run = new Enforcer(api, { sshKey: null, enforce: true, owner: "jimmy" }, deps);
+  const run = new Enforcer(
+    api,
+    fileStore(stage.folder),
+    { sshKey: null, enforce: true, owner: "jimmy" },
+    deps,
+  );
   return {
     run,
     destroyed,
@@ -95,7 +101,7 @@ const BAD_MODES =
 describe("a rent keeps what replaces its box", () => {
   test("the rest of the card, the confirmed budget and what the box was created with", async () => {
     const { folder } = await rented();
-    const [lease] = await readLeases(leasesPath(folder));
+    const [lease] = await readLeases(fileStore(folder));
     expect(lease?.replace).toMatchObject({
       offers: [102, 103, 104, 105],
       excluded: [],
@@ -130,7 +136,7 @@ describe("a broken box is replaced within the confirmed budget", () => {
     // 102 is on the machine that failed, so 103 is rented, with no new card.
     expect(asks(stage.fake)).toEqual([101, 103]);
     expect(stage.fake.puts[1]?.body["label"]).toBe(LABEL);
-    const leases = await readLeases(leasesPath(stage.folder));
+    const leases = await readLeases(fileStore(stage.folder));
     expect(leases.find((l) => l.box === 9101)?.cancelled).toBe(true);
     const next = leases.find((l) => l.box === null);
     expect(next?.budget).toBe(19.5);
@@ -258,7 +264,7 @@ describe("a box that never starts, and what is left to rent", () => {
       at += H;
     }
     expect(asks(stage.fake)).toEqual([101, 103, 104, 105]);
-    const last = (await readLeases(leasesPath(stage.folder))).find((l) => l.box === null);
+    const last = (await readLeases(fileStore(stage.folder))).find((l) => l.box === null);
     // Three broken boxes, $0.50 each, are carried over.
     expect(last?.replace).toMatchObject({ count: 3, spent: 1.5, excluded: [1, 3, 4] });
     expect(last?.budget).toBe(18.5);
@@ -282,7 +288,7 @@ describe("a box that never starts, and what is left to rent", () => {
     expect(told[0]).toContain("No replacement was rented");
     expect(told[0]).toContain("fits the $0.20 that is left of $20");
     // The booking made for the try is dropped again.
-    const leases = await readLeases(leasesPath(stage.folder));
+    const leases = await readLeases(fileStore(stage.folder));
     expect(leases.filter((l) => l.box === null)).toEqual([]);
   });
 

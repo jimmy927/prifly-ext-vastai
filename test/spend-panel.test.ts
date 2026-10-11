@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChargeCache, type ChargeRow, chargesPath } from "../charges";
-import { appendEvents, eventsPath } from "../events";
+import { ChargeCache, type ChargeRow } from "../charges";
+import { appendEvents } from "../events";
 import type { ExtensionSession } from "../prifly-api";
 import {
   answer,
@@ -13,6 +13,7 @@ import {
   nameOfBox,
   type PanelData,
 } from "../spend-panel";
+import { fileStore } from "../store";
 
 const NOW = Date.parse("2026-10-06T11:22:00Z");
 const session = (id: string, title: string, cwd: string): ExtensionSession => ({
@@ -90,8 +91,8 @@ describe("groups", () => {
 
 describe("answer", () => {
   test("api/data: charges, groups, the timeline and what bills now", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "vast-panel-"));
-    await appendEvents(eventsPath(folder), [
+    const store = fileStore(await mkdtemp(join(tmpdir(), "vast-panel-")));
+    await appendEvents(store, [
       {
         at: NOW - 3_600_000,
         kind: "rented",
@@ -102,10 +103,10 @@ describe("answer", () => {
     ]);
     const asked: string[] = [];
     const deps = {
-      folder,
+      store,
       owner: "jimmy",
       sessions: () => SESSIONS,
-      charges: new ChargeCache(chargesPath(folder), async (day) => {
+      charges: new ChargeCache(store, async (day) => {
         asked.push(day);
         return [{ box: 5, label: "jimmy/s-97f73f94/dictbase", kind: "instance", amount: 1 }];
       }),
@@ -145,15 +146,15 @@ describe("answer", () => {
   });
 
   test("a box the history knows only by its id takes its label from its charges", async () => {
-    const folder = await mkdtemp(join(tmpdir(), "vast-panel-"));
-    await appendEvents(eventsPath(folder), [
+    const store = fileStore(await mkdtemp(join(tmpdir(), "vast-panel-")));
+    await appendEvents(store, [
       { at: NOW - 3_600_000, kind: "destroyed", box: 8, reason: "the host's end date is near" },
     ]);
     const deps = {
-      folder,
+      store,
       owner: "jimmy",
       sessions: () => SESSIONS,
-      charges: new ChargeCache(chargesPath(folder), async () => [
+      charges: new ChargeCache(store, async () => [
         { box: 8, label: "jimmy/s-e5636c90/jtrain", kind: "instance", amount: 8.79 },
       ]),
       listed: () => [],
@@ -171,10 +172,10 @@ describe("answer", () => {
 
 describe("the machine cards", () => {
   const deps = (features: string[], pressed: string[]) => ({
-    folder: "/nowhere",
+    store: fileStore("/nowhere"),
     owner: "jimmy",
     sessions: () => SESSIONS,
-    charges: new ChargeCache("/nowhere/charges.json", async () => []),
+    charges: new ChargeCache(fileStore("/nowhere"), async () => []),
     listed: () => [],
     now: () => NOW,
     cards: () => [],

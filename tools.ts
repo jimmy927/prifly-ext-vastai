@@ -12,7 +12,7 @@
 import { z } from "zod";
 import { cpuScores } from "./cpu-score";
 import { available, RAISE_ACK, runwayHours } from "./credit";
-import { claimEndpoint, endpointsPath, workerOf } from "./endpoints";
+import { claimEndpoint, workerOf } from "./endpoints";
 import {
   cancel,
   extend,
@@ -20,7 +20,6 @@ import {
   type Lease,
   type LeaseTarget,
   leaseOf,
-  leasesPath,
   raiseBudget,
   readLeases,
   updateLeases,
@@ -93,7 +92,7 @@ function claimEndpointTool(deps: ToolDeps): ExtensionTool {
         )
         .catch(() => []);
       const name = args.name ?? workers[0]?.endpoint ?? `endpoint ${args.endpoint_id}`;
-      const earlier = await claimEndpoint(endpointsPath(deps.folder), {
+      const earlier = await claimEndpoint(deps.store, {
         endpoint: args.endpoint_id,
         name,
         session: ctx.session,
@@ -216,7 +215,7 @@ function boxesTool(deps: ToolDeps): ExtensionTool {
     async (_args, ctx) => {
       const [boxes, leases, credit] = await Promise.all([
         ownBoxes(deps, ctx.session),
-        readLeases(leasesPath(deps.folder)),
+        readLeases(deps.store),
         creditNow(deps),
       ]);
       const lines = boxes.map((b) => boxLine(b, leaseOf(leases, b.id, b.label), deps));
@@ -283,7 +282,7 @@ function extendTool(deps: ToolDeps): ExtensionTool {
     ExtendArgs,
     async (args, ctx) => {
       const box = pickBox(await ownBoxes(deps, ctx.session), args.name);
-      const lease = leaseOf(await readLeases(leasesPath(deps.folder)), box.id, box.label);
+      const lease = leaseOf(await readLeases(deps.store), box.id, box.label);
       if (lease === null) {
         throw new Error(
           `${box.name} has no lease: it is destroyed soon. Rent a new box with vast_rent.`,
@@ -385,7 +384,7 @@ async function applyExtension(
   );
   const allowed = (end - from) / HOUR_MS;
   const target = targetOf(lease);
-  const next = await updateLeases(leasesPath(deps.folder), (leases) => {
+  const next = await updateLeases(deps.store, (leases) => {
     const raised =
       confirmed === null
         ? { leases: [...leases], result: lease }
@@ -443,10 +442,9 @@ function cancelTool(deps: ToolDeps): ExtensionTool {
     z.strictObject({ name: z.string().describe("The box's name (or its Vast.ai id)") }),
     async (args, ctx) => {
       const owner = await deps.owner();
-      const path = leasesPath(deps.folder);
-      const leases = await readLeases(path);
+      const leases = await readLeases(deps.store);
       const label = leaseLabel(leases, owner, ctx.session, args.name);
-      const lease = await updateLeases(path, (current) => cancel(current, { label }));
+      const lease = await updateLeases(deps.store, (current) => cancel(current, { label }));
       if (lease.box !== null) deps.log("cancelled", { instance: lease.box, label });
       deps.refresh();
       return lease.box === null

@@ -10,6 +10,7 @@ import type {
   ExtensionTool,
   ExtensionToolContext,
 } from "../prifly-api";
+import { fileStore, type Store } from "../store";
 import { makeTools } from "../tools";
 
 export const H = 3_600_000;
@@ -101,10 +102,16 @@ export function vast(offers: Offer[], creates: Creates = {}) {
   return { get, puts, instances, account, cpuPage };
 }
 
-export async function setup(fake: ReturnType<typeof vast>, features: readonly string[] = []) {
+/** The tools on a fake Vast.ai, keeping their leases in `store` (the folder's files when left out). */
+export async function setup(
+  fake: ReturnType<typeof vast>,
+  features: readonly string[] = [],
+  storeOf: (folder: string) => Store = fileStore,
+) {
   const folder = await mkdtemp(join(tmpdir(), "vastai-tools-"));
+  const store = storeOf(folder);
   const tools = makeTools({
-    folder,
+    store,
     owner: async () => "jimmy",
     sshKey: null,
     keys: async () => ["key"],
@@ -121,7 +128,7 @@ export async function setup(fake: ReturnType<typeof vast>, features: readonly st
     if (found === undefined) throw new Error(`no tool ${name}`);
     return found;
   };
-  return { folder, tool };
+  return { folder, store, tool };
 }
 
 /** A fake session that answers each pick card from a script, and notes the world as it asked. */

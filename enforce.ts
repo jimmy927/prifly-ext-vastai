@@ -34,7 +34,7 @@ import {
   committedOf,
   runwayHours,
 } from "./credit";
-import { type Lease, leaseOf, leasesPath, readLeases, tidy, updateLeases } from "./leases";
+import { type Lease, leaseOf, readLeases, tidy, updateLeases } from "./leases";
 import { readLoad } from "./load";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import {
@@ -50,8 +50,9 @@ import {
   span,
   type Verdict,
 } from "./rules";
-import { onBox, sshTarget } from "./run";
+import { boxRunner, type onBox, sshTarget } from "./run";
 import { BUDGET_WARN, budgetText, cappedUntil, dollars, spentLine, spentOf } from "./spend";
+import type { Store } from "./store";
 import {
   destroyInstance,
   type Fetch,
@@ -86,7 +87,7 @@ export type Judged = {
 /** What the enforcer does to Vast.ai, replaceable so a test destroys nothing. */
 export type EnforceDeps = BrokenDeps & {
   destroy: (id: number) => Promise<void>;
-  /** Run a command on a box over ssh; the real one when left out. */
+  /** Run a command on a box over ssh; the real one (`boxRunner`) when left out. */
   onBox?: typeof onBox;
   /** The on-box guard's source; `guard.sh` beside this file when left out. */
   guardScript?: () => Promise<string>;
@@ -118,7 +119,9 @@ export class Enforcer {
   readonly #api: ExtensionApi;
   readonly #config: EnforceConfig;
   readonly #deps: EnforceDeps;
-  readonly #file: string;
+  readonly #store: Store;
+  /** ssh to a box: the vault's key where prifly has "vault-ssh" (`boxRunner`), else `sshKey`. */
+  readonly #onBox: typeof onBox;
   readonly #idle = new IdleWatch();
   /** Notices already given, so each is said once. */
   readonly #told = new Set<string>();
@@ -134,11 +137,17 @@ export class Enforcer {
   /** The credit at the last round, to see a top-up. */
   #lastCredit: number | null = null;
 
-  constructor(api: ExtensionApi, config: EnforceConfig, deps: EnforceDeps = restDeps(api.vault)) {
+  constructor(
+    api: ExtensionApi,
+    store: Store,
+    config: EnforceConfig,
+    deps: EnforceDeps = restDeps(api.vault),
+  ) {
     this.#api = api;
     this.#config = config;
     this.#deps = deps;
-    this.#file = leasesPath(api.folder);
+    this.#store = store;
+    this.#onBox = deps.onBox ?? boxRunner(api);
     this.#broken = new BrokenWatch({
       api,
       enforce: config.enforce,
@@ -146,16 +155,12 @@ export class Enforcer {
       deps,
       onBox: (...args) => this.#onBox(...args),
       tell: (key, text, tone, session) => this.#tell(key, text, tone, session),
-      file: this.#file,
+      store,
     });
   }
 
   get #credit(): CreditConfig {
     return this.#config.credit ?? CREDIT_DEFAULTS;
-  }
-
-  get #onBox(): typeof onBox {
-    return this.#deps.onBox ?? onBox;
   }
 
   stop(): void {
@@ -172,9 +177,11 @@ export class Enforcer {
     const known = boxes.flatMap((box) =>
       box.id === undefined ? [] : [{ id: box.id, label: box.label ?? "" }],
     );
-    let leases = await readLeases(this.#file);
+    // A store that cannot be read throws here, and the round with it: no box
+    // is judged lease-less for want of its leases.
+    let leases = await readLeases(this.#store);
     if (tidy(leases, known, now).changed) {
-      leases = await updateLeases(this.#file, (current) => {
+      leases = await updateLeases(this.#store, (current) => {
         const next = tidy(current, known, now).leases;
         return { leases: next, result: next };
       });
@@ -393,7 +400,7 @@ export class Enforcer {
       }
       if (this.#stopped || !(await this.#stillDue(box, id))) return;
       await this.#deps.destroy(id);
-      await updateLeases(this.#file, (leases) => ({
+      await updateLeases(this.#store, (leases) => ({
         leases: leases.filter((lease) => lease.box !== id),
         result: null,
       }));
@@ -430,7 +437,7 @@ export class Enforcer {
   }
 
   async #stillDue(box: Instance, id: number): Promise<boolean> {
-    const lease = leaseOf(await readLeases(this.#file), id, box.label ?? "");
+    const lease = leaseOf(await readLeases(this.#store), id, box.label ?? "");
     const now = Date.now();
     const verdict = judge(factsOf(box, id, spentOf(box, now)), lease, now, this.#mine());
     return verdict.kind === "due";

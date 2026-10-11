@@ -1,6 +1,7 @@
 /** Running things: commands on a box over ssh. */
 
 import { join } from "node:path";
+import type { ExtensionApi } from "./prifly-api";
 import type { Instance } from "./vast-api";
 
 export type Ran = { code: number; out: string; err: string };
@@ -75,6 +76,16 @@ export async function sshKeyProblem(
     : `sshKey ${path} does not exist on this machine: ssh to the boxes will fail until "sshKey" in config.json names the key`;
 }
 
+/** The argv that runs a shell command on a box, unattended: no password prompt, a bounded wait to connect. */
+function boxArgv(
+  target: { host: string; port: number },
+  sshKey: string | null,
+  command: string,
+): string[] {
+  const [ssh = "ssh", ...rest] = sshCommand(target.host, target.port, sshKey);
+  return [ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", ...rest, command];
+}
+
 /** Run a shell command on a box, unattended: no password prompt, a bounded wait to connect. */
 export function onBox(
   target: { host: string; port: number },
@@ -83,7 +94,50 @@ export function onBox(
   timeoutMs: number,
   stdin?: string,
 ): Promise<Ran> {
-  const [ssh = "ssh", ...rest] = sshCommand(target.host, target.port, sshKey);
-  const argv = [ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", ...rest, command];
-  return run(argv, timeoutMs, stdin);
+  return run(boxArgv(target, sshKey, command), timeoutMs, stdin);
+}
+
+/** prifly's vault entry for the key the boxes accept: the manifest's `vault` names it. */
+export const VAULT_SSH_ENTRY = "vast-ssh";
+/** The longest prifly lets a vault ssh run. */
+const VAULT_MAX_MS = 600_000;
+
+/**
+ * `command` with `stdin` carried in it, for a vault ssh, which takes no
+ * stdin: base64 holds no quote or `$`, and the box decodes it into the
+ * command's stdin.
+ */
+export function withStdin(command: string, stdin: string): string {
+  return `echo ${Buffer.from(stdin).toString("base64")} | base64 -d | { ${command}; }`;
+}
+
+/**
+ * `onBox` with the key in prifly's vault, where this prifly has "vault-ssh":
+ * prifly runs ssh with the `vast-ssh` entry handed over, and the extension
+ * neither sees the key nor passes an `-i` of its own. When the vault says no
+ * (no such entry, not an ssh-key, not at level 1), that is logged once and
+ * the command runs as before, with the configured `sshKey` (or ssh's own
+ * keys when there is none). On an older prifly, plain `onBox` (`plain`, which
+ * a test replaces).
+ */
+export function boxRunner(
+  api: Pick<ExtensionApi, "features" | "vault" | "log">,
+  plain: typeof onBox = onBox,
+): typeof onBox {
+  const vault = api.vault;
+  if (!api.features?.includes("vault-ssh") || vault?.ssh === undefined) return plain;
+  const said = new Set<string>();
+  return async (target, sshKey, command, timeoutMs, stdin) => {
+    const argv = boxArgv(target, null, stdin === undefined ? command : withStdin(command, stdin));
+    const ran = await vault.ssh?.(VAULT_SSH_ENTRY, argv, {
+      timeoutMs: Math.min(timeoutMs, VAULT_MAX_MS),
+    });
+    if (ran?.ok) return { code: ran.exitCode ?? -1, out: ran.stdout, err: ran.stderr };
+    const message = ran?.message ?? "vault ssh is not there";
+    if (!said.has(message)) {
+      said.add(message);
+      api.log("vault_ssh_refused", { entry: VAULT_SSH_ENTRY, message, fallback: sshKey });
+    }
+    return plain(target, sshKey, command, timeoutMs, stdin);
+  };
 }

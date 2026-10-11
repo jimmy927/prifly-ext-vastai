@@ -8,13 +8,14 @@
  * row). Each row carries the box's label, so destroyed boxes count too, and
  * bandwidth is in the amount, which the hourly rate leaves out.
  *
- * A day that is over does not change, so each is kept in `charges.json` in
- * the extension's folder and asked again only while it may still be
- * settling: until a day after it ended, at most every ten minutes.
+ * A day that is over does not change, so each is kept in the extension's
+ * store (`store.ts`: prifly's `api.state`, or `charges.json` on an older
+ * prifly) and asked again only while it may still be settling: until a day
+ * after it ended, at most every ten minutes.
  */
 
-import { join } from "node:path";
 import { z } from "zod";
+import type { Store } from "./store";
 import { authorized, type Fetch, failure, field, SERVER, text } from "./vast-api";
 
 const DAY_MS = 86_400_000;
@@ -161,20 +162,16 @@ export function isStale(day: string, at: number, now: number): boolean {
   return at < dayStart(day) + DAY_MS + SETTLE_MS && now - at > STALE_MS;
 }
 
-export function chargesPath(folder: string): string {
-  return join(folder, "charges.json");
-}
-
-/** The days' charges, from `charges.json`, asking Vast.ai for the days missing or still settling. */
+/** The days' charges, from the store's "charges", asking Vast.ai for the days missing or still settling. */
 export class ChargeCache {
-  readonly #path: string;
+  readonly #store: Store;
   readonly #fetch: (day: string) => Promise<ChargeRow[]>;
   #cached: Cached | null = null;
   /** Days being asked now, so two panels opening at once ask once. */
   readonly #asking = new Map<string, Promise<void>>();
 
-  constructor(path: string, fetchDay: (day: string) => Promise<ChargeRow[]>) {
-    this.#path = path;
+  constructor(store: Store, fetchDay: (day: string) => Promise<ChargeRow[]>) {
+    this.#store = store;
     this.#fetch = fetchDay;
   }
 
@@ -198,7 +195,7 @@ export class ChargeCache {
         ),
       );
     }
-    if (due.length > 0) await Bun.write(this.#path, `${JSON.stringify(cached)}\n`);
+    if (due.length > 0) await this.#store.set("charges", cached);
     const rows = new Map<string, ChargeRow[]>();
     for (const day of days) {
       const kept = cached.days[day];
@@ -221,9 +218,7 @@ export class ChargeCache {
 
   async #load(): Promise<Cached> {
     if (this.#cached !== null) return this.#cached;
-    const raw: unknown = await Bun.file(this.#path)
-      .json()
-      .catch(() => null);
+    const raw: unknown = await this.#store.get("charges").catch(() => null);
     const parsed = CachedSchema.safeParse(raw);
     this.#cached = parsed.success ? parsed.data : { days: {} };
     return this.#cached;

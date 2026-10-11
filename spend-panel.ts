@@ -16,12 +16,13 @@
 
 import { basename } from "node:path";
 import { type ChargeCache, type ChargeRow, dayStart, lastDays } from "./charges";
-import { type BoxEvent, eventsPath, readEvents } from "./events";
+import { type BoxEvent, readEvents } from "./events";
 import type { BoxCard } from "./fleet";
-import { type Lease, leasesPath, readLeases } from "./leases";
+import { type Lease, readLeases } from "./leases";
 import type { ExtensionSession, PanelRequest } from "./prifly-api";
 import { repoOfFolder } from "./repo";
 import { parseLabel } from "./rules";
+import type { Store } from "./store";
 import { type TimelineBox, timelineOf } from "./timeline";
 import type { Instance } from "./vast-api";
 
@@ -36,7 +37,8 @@ export type Group = {
 };
 
 export type PanelDeps = {
-  folder: string;
+  /** Where the history and the leases are kept (`store.ts`). */
+  store: Store;
   owner: string;
   sessions: () => ExtensionSession[];
   charges: ChargeCache;
@@ -181,8 +183,8 @@ export async function panelData(deps: PanelDeps, days: number): Promise<PanelDat
   const from = dayStart(wanted[0] ?? "");
   const [{ rows, failed }, events, leases] = await Promise.all([
     deps.charges.days(wanted, now),
-    readEvents(eventsPath(deps.folder)),
-    readLeases(leasesPath(deps.folder)).catch(() => [] as Lease[]),
+    readEvents(deps.store),
+    readLeases(deps.store).catch(() => [] as Lease[]),
   ]);
   const listed = deps.listed();
   const charges = chargeLines(rows, deps.owner);

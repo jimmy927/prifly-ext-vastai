@@ -6,7 +6,7 @@
  * shown, because the reader's word was for this budget, not for this box.
  */
 
-import { book, dropBooking, leasesPath, type Replace, updateLeases } from "./leases";
+import { book, dropBooking, type Replace, updateLeases } from "./leases";
 import { fetchOffer, type Offer } from "./offers";
 import { refusalOf, runHours } from "./rent";
 import { budgetText } from "./spend";
@@ -16,7 +16,7 @@ import { createInstance, listInstances, OfferGone, withKeys } from "./vast-api";
 /** A rent replaces its boxes at most this many times. */
 export const MAX_REPLACEMENTS = 3;
 
-export type ReplaceDeps = Pick<ToolDeps, "folder" | "keys" | "get" | "now" | "log" | "sshKey">;
+export type ReplaceDeps = Pick<ToolDeps, "store" | "keys" | "get" | "now" | "log" | "sshKey">;
 
 export type Rented =
   | { kind: "rented"; box: number; offer: Offer; budget: number; ssh: string | null }
@@ -46,8 +46,7 @@ export async function rentNext(deps: ReplaceDeps, label: string, state: Replace)
       }
     }
   } finally {
-    if (!created)
-      await updateLeases(leasesPath(deps.folder), (leases) => dropBooking(leases, label));
+    if (!created) await updateLeases(deps.store, (leases) => dropBooking(leases, label));
   }
   return {
     kind: "none",
@@ -84,9 +83,7 @@ async function tryNext(
     offers: state.offers.slice(index + 1),
     machine: offer.machine_id ?? null,
   };
-  await updateLeases(leasesPath(deps.folder), (leases) =>
-    book(leases, label, hours, now, rest, next),
-  );
+  await updateLeases(deps.store, (leases) => book(leases, label, hours, now, rest, next));
   const box = await create(deps, { id, label, state }, notes);
   if (box === null) return null;
   deps.log("replacement_rented", {

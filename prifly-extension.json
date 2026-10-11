@@ -2,10 +2,10 @@
   "id": "vastai",
   "name": "Vast.ai boxes",
   "description": "Each rented Vast.ai box on the session that rented it; sessions rent through tools that ask you for a budget, and a hook refuses the CLI.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "main": "index.ts",
   "prompt": "prompt.md",
-  "vault": ["vastai"],
+  "vault": ["vastai", "vast-ssh"],
   "panels": [
     {
       "id": "spend",

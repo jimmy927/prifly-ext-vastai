@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type Lease, leasesPath, readLeases, updateLeases } from "../leases";
+import { type Lease, readLeases, updateLeases } from "../leases";
+import { fileStore } from "../store";
 import { ctxFor, H, LABEL, NOW, setup, vast } from "./fake-vast";
 
 /**
@@ -32,11 +33,11 @@ async function withBox(budget: number | null, hostEndsIn?: number) {
     cancelled: false,
     budget,
   };
-  await updateLeases(leasesPath(ctx.folder), () => ({ leases: [lease], result: null }));
+  await updateLeases(fileStore(ctx.folder), () => ({ leases: [lease], result: null }));
   return { fake, ...ctx };
 }
 
-const only = async (folder: string) => (await readLeases(leasesPath(folder)))[0];
+const only = async (folder: string) => (await readLeases(fileStore(folder)))[0];
 
 describe("vast_boxes", () => {
   test("lists this session's boxes only, with spend of budget, lease end and ssh", async () => {
@@ -214,7 +215,7 @@ describe("vast_cancel", () => {
 
   test("a booking nothing was rented for is dropped", async () => {
     const { tool, folder } = await withBox(10);
-    await updateLeases(leasesPath(folder), () => ({
+    await updateLeases(fileStore(folder), () => ({
       leases: [
         {
           label: "jimmy/s-0123abcd/wait",
@@ -229,6 +230,6 @@ describe("vast_cancel", () => {
     }));
     const text = await tool("vast_cancel").call({ name: "wait" }, ctxFor([]).ctx);
     expect(text).toContain("Dropped the booking");
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 });

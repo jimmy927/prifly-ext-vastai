@@ -17,15 +17,7 @@ import { z } from "zod";
 import { type CpuIndex, cpuLink, cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
 import { gpuLink } from "./gpu-link";
-import {
-  book,
-  dropBooking,
-  leasesPath,
-  MAX_AHEAD_MS,
-  type Replace,
-  setReplace,
-  updateLeases,
-} from "./leases";
+import { book, dropBooking, MAX_AHEAD_MS, type Replace, setReplace, updateLeases } from "./leases";
 import {
   endsCell,
   endsTooSoon,
@@ -354,8 +346,7 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
       }
     }
   } finally {
-    if (!created)
-      await updateLeases(leasesPath(deps.folder), (leases) => dropBooking(leases, attempt.label));
+    if (!created) await updateLeases(deps.store, (leases) => dropBooking(leases, attempt.label));
   }
   throw new Error(
     `No box was rented and the booking is dropped: ${failures.join("; ")}. The reader's budget was ${budgetText(attempt.budget)}.`,
@@ -386,9 +377,7 @@ async function keepReplacements(
     machine: offer.machine_id ?? null,
     replaces: null,
   };
-  await updateLeases(leasesPath(deps.folder), (leases) =>
-    setReplace(leases, { box: box.id, label }, replace),
-  );
+  await updateLeases(deps.store, (leases) => setReplace(leases, { box: box.id, label }, replace));
 }
 
 /** Why the offer cannot be rented for the confirmed budget, or null when it can. */
@@ -426,7 +415,7 @@ async function tryOffer(
     if (chosen) throw new Error(failures.join("; "));
     return null;
   }
-  await updateLeases(leasesPath(deps.folder), (leases) => book(leases, label, hours, now, budget));
+  await updateLeases(deps.store, (leases) => book(leases, label, hours, now, budget));
   const until = now + hours * HOUR_MS;
   const request = {
     image: args.image,

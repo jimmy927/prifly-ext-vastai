@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leasesPath, readLeases } from "../leases";
+import { readLeases } from "../leases";
 import { SSH_KEY_REPAIR, withSshRepair } from "../rent";
+import { fileStore } from "../store";
 import { ctxFor, H, LABEL, NOW, offer, setup, vast } from "./fake-vast";
 
 /** The onstart of the first create request. */
@@ -79,7 +80,7 @@ describe("vast_rent", () => {
     let leasesAtPick = -1;
     const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }], () => {
       putsAtPick = fake.puts.length;
-      void readLeases(leasesPath(folder)).then((l) => {
+      void readLeases(fileStore(folder)).then((l) => {
         leasesAtPick = l.length;
       });
     });
@@ -121,7 +122,7 @@ describe("vast_rent", () => {
       "before the budget runs out",
     );
     expect(cards).toEqual([]);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("a fallback row that ends too soon for the confirmed budget is skipped", async () => {
@@ -149,7 +150,7 @@ describe("vast_rent", () => {
     const { ctx, cards } = ctxFor([]);
     await expect(tool("vast_rent").call(RENT, ctx)).rejects.toThrow("None of the offers");
     expect(cards).toEqual([]);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("the lease holds the CONFIRMED budget, not the suggested one, and ends where it runs out", async () => {
@@ -157,7 +158,7 @@ describe("vast_rent", () => {
     const { folder, tool } = await setup(fake);
     const { ctx } = ctxFor([{ row: 0, amount: 7.5 }]);
     const text = await tool("vast_rent").call({ ...RENT, offers: [101] }, ctx);
-    const [lease] = await readLeases(leasesPath(folder));
+    const [lease] = await readLeases(fileStore(folder));
     expect(lease?.budget).toBe(7.5);
     expect(lease?.label).toBe(LABEL);
     // 7.5 / 0.5 = 15 hours.
@@ -182,7 +183,7 @@ describe("vast_rent", () => {
     const fake = vast([offer(101, 0.5)]);
     const { folder, tool } = await setup(fake);
     await tool("vast_rent").call({ ...RENT, offers: [101] }, ctxFor([{ row: 0, amount: 40 }]).ctx);
-    expect((await readLeases(leasesPath(folder)))[0]?.until).toBe(NOW + 24 * H);
+    expect((await readLeases(fileStore(folder)))[0]?.until).toBe(NOW + 24 * H);
   });
 
   test("ports and env go into the create body the way the CLI sends them", async () => {
@@ -314,7 +315,7 @@ describe("vast_rent backups and failures", () => {
     // 102 (chosen) is gone, then 101 (card order), then 103 costs 8 an hour against 5 and is skipped, and 104 is rented.
     expect(fake.puts.map((p) => p.url.split("/")[6])).toEqual(["102", "101", "104"]);
     expect(text).toContain("#9104");
-    const leases = await readLeases(leasesPath(folder));
+    const leases = await readLeases(fileStore(folder));
     expect(leases).toHaveLength(1);
     expect(leases[0]?.budget).toBe(5);
     // The lease ends where this box's budget runs out: 5 / 0.6 hours.
@@ -328,7 +329,7 @@ describe("vast_rent backups and failures", () => {
       tool("vast_rent").call({ ...RENT, offers: [101, 102] }, ctxFor([{ row: 0, amount: 2 }]).ctx),
     ).rejects.toThrow("more than the confirmed budget");
     expect(fake.puts).toEqual([]);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("choosing none rents nothing and leaves no booking", async () => {
@@ -337,7 +338,7 @@ describe("vast_rent backups and failures", () => {
     const text = await tool("vast_rent").call({ ...RENT, offers: [101] }, ctxFor([null]).ctx);
     expect(text).toContain("chose none");
     expect(fake.puts).toEqual([]);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("when every create fails the booking is dropped and the reasons are said", async () => {
@@ -350,7 +351,7 @@ describe("vast_rent backups and failures", () => {
     expect((failure as Error).message).toContain("offer unavailable");
     expect((failure as Error).message).toContain("502");
     expect(fake.puts).toHaveLength(2);
-    expect(await readLeases(leasesPath(folder))).toEqual([]);
+    expect(await readLeases(fileStore(folder))).toEqual([]);
   });
 
   test("a box already named so in this session is refused before anything is asked", async () => {

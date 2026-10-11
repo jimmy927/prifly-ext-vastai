@@ -1,9 +1,10 @@
 /**
  * The history of every box: what the spend panel's timeline is drawn from.
  *
- * `leases.json` holds only the leases running now — a lease is dropped when
- * its box goes — so the past is kept here, in `events.jsonl` in the
- * extension's folder: one JSON line per event, only ever appended to.
+ * The leases hold only those running now — a lease is dropped when its box
+ * goes — so the past is kept here, in the store's "events" log (`store.ts`:
+ * prifly's `api.state`, or `events.jsonl` in the extension's folder on an
+ * older prifly): one JSON entry per event, only ever appended to.
  *
  * Two kinds of event land here:
  * - What the extension does, recorded where it already logs it (`recorder`
@@ -14,15 +15,16 @@
  *   destroyed from the console, by its on-box guard, or by Vast.ai — so every
  *   box has an end, whoever ended it.
  *
- * The first time there is no file, the lines the host's log still holds
+ * The first time there is no history, the lines the host's log still holds
  * (`prifly*.log`, about two days) are read in, so the timeline is not empty
  * on the day this ships.
  */
 
-import { appendFile, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { ExtensionApi } from "./prifly-api";
+import type { Store } from "./store";
 import type { Instance } from "./vast-api";
 
 export const EventSchema = z.object({
@@ -46,34 +48,18 @@ export const EventSchema = z.object({
 });
 export type BoxEvent = z.infer<typeof EventSchema>;
 
-export function eventsPath(folder: string): string {
-  return join(folder, "events.jsonl");
-}
-
-/** Every event, oldest first; a line that does not parse is skipped. */
-export async function readEvents(path: string): Promise<BoxEvent[]> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) return [];
-  return parseLines(await file.text());
-}
-
-function parseLines(text: string): BoxEvent[] {
+/** Every event, oldest first; one that does not parse is skipped. */
+export async function readEvents(store: Store): Promise<BoxEvent[]> {
   const events: BoxEvent[] = [];
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      const parsed = EventSchema.safeParse(JSON.parse(line));
-      if (parsed.success) events.push(parsed.data);
-    } catch {
-      // A line cut short by a crash: the rest of the file still counts.
-    }
+  for (const entry of await store.read("events")) {
+    const parsed = EventSchema.safeParse(entry);
+    if (parsed.success) events.push(parsed.data);
   }
   return events.sort((a, b) => a.at - b.at);
 }
 
-export async function appendEvents(path: string, events: readonly BoxEvent[]): Promise<void> {
-  if (events.length === 0) return;
-  await appendFile(path, events.map((event) => `${JSON.stringify(event)}\n`).join(""));
+export function appendEvents(store: Store, events: readonly BoxEvent[]): Promise<void> {
+  return store.append("events", events);
 }
 
 type Fields = Parameters<ExtensionApi["log"]>[1];
@@ -117,11 +103,11 @@ const KINDS: Record<string, BoxEvent["kind"]> = {
 
 /**
  * `api.log`, also writing the history: every log line that is an event is
- * appended to `events.jsonl` as well. A write that fails is logged and lost;
+ * appended to the history as well. A write that fails is logged and lost;
  * it never fails what was being done.
  */
 export function recorder(
-  path: string,
+  store: Store,
   log: ExtensionApi["log"],
   now: () => number = Date.now,
 ): ExtensionApi["log"] {
@@ -129,7 +115,7 @@ export function recorder(
     log(name, fields);
     const event = eventOfLog(name, fields, now());
     if (event === null) return;
-    appendEvents(path, [event]).catch((caught: unknown) =>
+    appendEvents(store, [event]).catch((caught: unknown) =>
       log("history_write_failed", {
         message: caught instanceof Error ? caught.message : String(caught),
       }),
@@ -147,19 +133,19 @@ export function withRecorder(api: ExtensionApi, log: ExtensionApi["log"]): Exten
 /**
  * Seeing the list of boxes each minute: the boxes not yet known appear, the
  * known ones no longer listed are gone. Which boxes are live is read back
- * from the file at the start, so a restart neither repeats nor misses one.
+ * from the history at the start, so a restart neither repeats nor misses one.
  */
 export class Observer {
-  readonly #path: string;
+  readonly #store: Store;
   #live: Set<number> | null = null;
 
-  constructor(path: string) {
-    this.#path = path;
+  constructor(store: Store) {
+    this.#store = store;
   }
 
-  /** The events this list adds, written to the file. */
+  /** The events this list adds, written to the history. */
   async observe(boxes: readonly Instance[], now: number): Promise<BoxEvent[]> {
-    const live = this.#live ?? liveOf(await readEvents(this.#path));
+    const live = this.#live ?? liveOf(await readEvents(this.#store));
     const listed = new Set<number>();
     const added: BoxEvent[] = [];
     for (const box of boxes) {
@@ -172,7 +158,7 @@ export class Observer {
       added.push(event);
     }
     for (const id of live) if (!listed.has(id)) added.push({ at: now, kind: "gone", box: id });
-    await appendEvents(this.#path, added);
+    await appendEvents(this.#store, added);
     this.#live = listed;
     return added;
   }
@@ -195,31 +181,31 @@ export function hostLogFolder(extensionFolder: string): string {
 
 /**
  * Start the history from what the host's log still holds, when there is no
- * history yet. The host's lines are `{"at": ISO, "event": "ext.vastai.<name>", …}`.
+ * history yet (`Store.seed`: on a prifly with `api.state`, an `events.jsonl`
+ * kept before is brought in instead, once). The host's lines are
+ * `{"at": ISO, "event": "ext.vastai.<name>", …}`.
  */
-export async function seedFromHostLog(
-  path: string,
+export function seedFromHostLog(
+  store: Store,
   logFolder: string,
   extensionId: string,
 ): Promise<number> {
-  if (await Bun.file(path).exists()) return 0;
-  const names = await readdir(logFolder).catch(() => [] as string[]);
-  const prefix = `ext.${extensionId}.`;
-  const events: BoxEvent[] = [];
-  for (const name of names.filter((n) => /^prifly(\.\d+)?\.log$/.test(n))) {
-    const text = await Bun.file(join(logFolder, name))
-      .text()
-      .catch(() => "");
-    for (const line of text.split("\n")) {
-      if (!line.includes(`"${prefix}`)) continue;
-      const event = hostLine(line, prefix);
-      if (event !== null) events.push(event);
+  return store.seed("events", async () => {
+    const names = await readdir(logFolder).catch(() => [] as string[]);
+    const prefix = `ext.${extensionId}.`;
+    const events: BoxEvent[] = [];
+    for (const name of names.filter((n) => /^prifly(\.\d+)?\.log$/.test(n))) {
+      const text = await Bun.file(join(logFolder, name))
+        .text()
+        .catch(() => "");
+      for (const line of text.split("\n")) {
+        if (!line.includes(`"${prefix}`)) continue;
+        const event = hostLine(line, prefix);
+        if (event !== null) events.push(event);
+      }
     }
-  }
-  events.sort((a, b) => a.at - b.at);
-  // Written even when empty, so the log is read once.
-  await Bun.write(path, events.map((event) => `${JSON.stringify(event)}\n`).join(""));
-  return events.length;
+    return events.sort((a, b) => a.at - b.at);
+  });
 }
 
 function hostLine(line: string, prefix: string): BoxEvent | null {

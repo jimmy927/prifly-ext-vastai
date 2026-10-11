@@ -2,10 +2,11 @@
  * Leases: how long a session has booked a box for, and what it may cost.
  *
  * A session's `vast_rent` books a lease before it rents the box; `vast_extend`
- * extends it and `vast_cancel` ends it (`tools.ts`). They are kept in
- * `leases.json` in the extension's folder, which the tools and the enforcer
- * (both in the prifly host) read and write, so every change takes the lock and
- * writes the file whole with a rename. A lease carries the dollar budget the
+ * extends it and `vast_cancel` ends it (`tools.ts`). They are kept in the
+ * extension's store (`store.ts`: prifly's `api.state`, or `leases.json` in
+ * its folder on an older prifly), which the tools and the enforcer (both in
+ * the prifly host) read and write, so every change goes through the store's
+ * one-at-a-time `update` and writes them whole. A lease carries the dollar budget the
  * reader confirmed for the rental, or null on a lease older than budgets.
  *
  * A lease is booked for a label — `<owner>/s-<session8>/<name>`, or the older
@@ -14,9 +15,8 @@
  * later box under the same label does not inherit it.
  */
 
-import { mkdir, open, rename, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { z } from "zod";
+import type { Store } from "./store";
 
 /**
  * What replacing a broken box needs, kept with its lease: the rest of the
@@ -73,77 +73,24 @@ export const MAX_AHEAD_MS = 24 * 3_600_000;
 /** How long `book` waits for its box before the lease is dropped as never used. */
 export const UNUSED_BOOKING_MS = 3_600_000;
 
-const LOCK_WAIT_MS = 10_000;
-/** A lock older than this was left by a process that died holding it. */
-const STALE_LOCK_MS = 30_000;
-
-export function leasesPath(folder: string): string {
-  return join(folder, "leases.json");
-}
-
-export async function readLeases(path: string): Promise<Lease[]> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) return [];
-  return FileSchema.parse(await file.json()).leases;
+/** The leases kept, none when there are none yet; a throw when they cannot be read. */
+export async function readLeases(store: Store): Promise<Lease[]> {
+  const kept = await store.get("leases");
+  return kept === undefined ? [] : FileSchema.parse(kept).leases;
 }
 
 /**
- * Read, change and write the leases under the lock. `change` returns the new
- * list and what to hand back to the caller.
+ * Read, change and write the leases, one change at a time (`Store.update`).
+ * `change` returns the new list and what to hand back to the caller.
  */
-export async function updateLeases<T>(
-  path: string,
+export function updateLeases<T>(
+  store: Store,
   change: (leases: Lease[]) => { leases: Lease[]; result: T },
 ): Promise<T> {
-  const release = await lock(`${path}.lock`);
-  try {
-    const { leases, result } = change(await readLeases(path));
-    const temp = `${path}.${process.pid}.tmp`;
-    await Bun.write(temp, `${JSON.stringify({ leases }, null, 2)}\n`);
-    await rename(temp, path);
-    return result;
-  } finally {
-    await release();
-  }
-}
-
-/**
- * Make the lock file: "made", or "held" when it exists. On Windows an EPERM
- * comes back as itself: Windows says that while the last holder's file is
- * still being deleted. Any other error is thrown.
- */
-async function create(path: string): Promise<"made" | "held" | Error> {
-  try {
-    const handle = await open(path, "wx");
-    await handle.close();
-    return "made";
-  } catch (caught) {
-    const code = caught instanceof Error && "code" in caught ? caught.code : null;
-    if (code === "EEXIST") return "held";
-    if (process.platform === "win32" && code === "EPERM") return caught as Error;
-    throw caught;
-  }
-}
-
-/** Hold `path` as a lock file; the function given back lets go. */
-export async function lock(path: string): Promise<() => Promise<void>> {
-  await mkdir(dirname(path), { recursive: true });
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    const made = await create(path);
-    if (made === "made") return () => rm(path, { force: true });
-    const held = await stat(path).catch(() => null);
-    if (held !== null && Date.now() - held.mtimeMs > STALE_LOCK_MS) {
-      await rm(path, { force: true });
-      continue;
-    }
-    if (Date.now() > deadline) {
-      // An EPERM that never cleared was a real refusal: its own error, not "locked".
-      if (made instanceof Error) throw made;
-      throw new Error(`The lease file is locked: ${path}`);
-    }
-    await Bun.sleep(50);
-  }
+  return store.update("leases", (kept) => {
+    const { leases, result } = change(kept === undefined ? [] : FileSchema.parse(kept).leases);
+    return { value: { leases }, result };
+  });
 }
 
 /** The lease a box holds: the one bound to it, else an unbound one booked for its label. */

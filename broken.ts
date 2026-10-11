@@ -26,6 +26,7 @@ import { parseLabel, span, type Verdict } from "./rules";
 import type { onBox } from "./run";
 import { sshTarget } from "./run";
 import { budgetText, dollars, spentOf } from "./spend";
+import type { Store } from "./store";
 import { type Fetch, type Instance, readApiKeys } from "./vast-api";
 
 /** A running box ssh has not let into for this long, never once, is broken. */
@@ -60,8 +61,8 @@ export type BrokenHost = {
   onBox: typeof onBox;
   /** Tell the reader once for each key. */
   tell: (key: string, text: string, tone: DecorationTone, session: string | undefined) => void;
-  /** The leases file. */
-  file: string;
+  /** Where the leases are kept. */
+  store: Store;
 };
 
 export class BrokenWatch {
@@ -182,7 +183,7 @@ export class BrokenWatch {
    * card under the same label with what is left of the confirmed budget.
    */
   async #replace(box: Instance, lease: Lease, reason: string, now: number): Promise<void> {
-    const { api, deps, file, sshKey } = this.#host;
+    const { api, deps, store, sshKey } = this.#host;
     const state = lease.replace ?? null;
     const id = box.id;
     const label = box.label ?? "";
@@ -191,7 +192,7 @@ export class BrokenWatch {
     const say = (text: string) =>
       this.#host.tell(`${id}:replaced`, text, "warning", parsed?.session);
     const target: LeaseTarget = lease.box === null ? { label } : { box: id };
-    await updateLeases(file, (leases) => cancel(leases, target));
+    await updateLeases(store, (leases) => cancel(leases, target));
     api.log("broken", { instance: id, reason, count: state.count });
     const next = advance(state, box, reason, now);
     const gone = `${parsed?.name ?? `#${id}`} (#${id}) is broken (${reason}) and is saved and destroyed`;
@@ -202,7 +203,7 @@ export class BrokenWatch {
       return;
     }
     const rentDeps: ReplaceDeps = {
-      folder: api.folder,
+      store,
       keys: deps.keys ?? (() => readApiKeys(process.env, homedir(), api.vault)),
       get: deps.get ?? fetch,
       now: () => now,

@@ -5,13 +5,13 @@ import { join } from "node:path";
 import {
   ChargeCache,
   type ChargeRow,
-  chargesPath,
   dayOf,
   fetchDay,
   isStale,
   lastDays,
   parseChargePage,
 } from "../charges";
+import { fileStore } from "../store";
 import type { Fetch } from "../vast-api";
 
 const H = 3_600_000;
@@ -103,9 +103,9 @@ describe("ChargeCache", () => {
   const row = (amount: number): ChargeRow => ({ box: 1, label: "a", kind: "instance", amount });
 
   test("asks each day once, keeps it, and asks a settling day again later", async () => {
-    const path = chargesPath(await mkdtemp(join(tmpdir(), "vast-charges-")));
+    const store = fileStore(await mkdtemp(join(tmpdir(), "vast-charges-")));
     const asked: string[] = [];
-    const cache = new ChargeCache(path, async (day) => {
+    const cache = new ChargeCache(store, async (day) => {
       asked.push(day);
       return [row(asked.length)];
     });
@@ -116,7 +116,7 @@ describe("ChargeCache", () => {
     await cache.days(days, NOW + 60_000);
     expect(asked).toHaveLength(2);
     // A new cache reads the file: only today is still settling.
-    const again = new ChargeCache(path, async (day) => {
+    const again = new ChargeCache(store, async (day) => {
       asked.push(day);
       return [row(9)];
     });
@@ -127,8 +127,8 @@ describe("ChargeCache", () => {
   });
 
   test("a day Vast.ai does not answer for is named, and the others still come", async () => {
-    const path = chargesPath(await mkdtemp(join(tmpdir(), "vast-charges-")));
-    const cache = new ChargeCache(path, async (day) => {
+    const store = fileStore(await mkdtemp(join(tmpdir(), "vast-charges-")));
+    const cache = new ChargeCache(store, async (day) => {
       if (day === "2026-10-05") throw new Error("offline");
       return [row(1)];
     });
