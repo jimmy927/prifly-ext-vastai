@@ -24,7 +24,7 @@ const LOCK_WAIT_MS = 10_000;
 const STALE_LOCK_MS = 30_000;
 
 /** The documents: each a JSON value, written whole. */
-export type DocName = "leases" | "endpoints" | "charges";
+export type DocName = "leases" | "endpoints" | "charges" | "holds";
 /** The logs: append-only, read back whole. */
 export type LogName = "events";
 

@@ -304,6 +304,17 @@ export type ExtensionLogEntry<T = unknown> = {
   entry: T;
 };
 
+/** A machine a running campaign holds: it must outlive its lease while its budget covers it. */
+export type CampaignHold = {
+  /** The key this extension gave the machine in `machines.report`: the Vast.ai instance id. */
+  machineKey: string;
+  /** The session to wake when the box cannot be kept. */
+  leadSession: string;
+  /** Remote globs to copy off the box before it is destroyed; empty: the default (`campaign.ts`). */
+  save: string[];
+  reason: string;
+};
+
 export type ExtensionApi = {
   /**
    * What this prifly host can do beyond the base contract, by name:
@@ -358,6 +369,13 @@ export type ExtensionApi = {
   state?: ExtensionStateApi;
   /** The sessions on this machine the host knows now. */
   sessions(): ExtensionSession[];
+  /** Sends `text` into the session as a <prifly-notice>; resumes it first if it ended. Mirrors prifly's `ExtensionApi.prompt`. */
+  prompt(sessionId: string, text: string): Promise<{ delivered: boolean }>;
+  /**
+   * The machines running campaigns hold. Absent on a prifly without
+   * campaigns: no box is held then.
+   */
+  campaigns?: { holds(): CampaignHold[] };
   /** A line in the host's log, under `ext.<id>.<event>`. */
   log(event: string, fields?: Record<string, string | number | boolean | null>): void;
   /** The extension's own folder: where it keeps its config. */

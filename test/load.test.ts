@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadOf } from "../enforce";
+import { loadOf } from "../box-facts";
 import {
   cardLoad,
   GPU_HOLD_MS,

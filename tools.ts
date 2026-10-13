@@ -13,6 +13,7 @@ import { z } from "zod";
 import { cpuScores } from "./cpu-score";
 import { available, RAISE_ACK, runwayHours } from "./credit";
 import { claimEndpoint, workerOf } from "./endpoints";
+import { hostCapOf, reachOf } from "./extend";
 import {
   cancel,
   extend,
@@ -36,7 +37,7 @@ import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
 import { MAX_REPLACEMENTS } from "./replace";
 import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
-import { budgetEnd, budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
+import { budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
 import {
   boxLabels,
   confirmOver,
@@ -312,12 +313,6 @@ function extendTool(deps: ToolDeps): ExtensionTool {
   );
 }
 
-/** The latest a lease may end for this box: `EXPIRY_MARGIN_MS` before the host's end date; null when it has none. */
-function hostCapOf(box: Instance): number | null {
-  const end = hostEnd(box);
-  return end === null ? null : end - EXPIRY_MARGIN_MS;
-}
-
 type Raise = { box: OwnBox; lease: Lease; hours: number; need: number; wanted: number };
 
 /** Ask the reader for a new budget on a one-row card; their amount, or null when they chose none. */
@@ -374,15 +369,7 @@ async function applyExtension(
 ): Promise<string> {
   const now = deps.now();
   const budget = confirmed ?? lease.budget;
-  const from = Math.max(lease.until, now);
-  const limit = budget === null ? null : budgetEnd(box, budget);
-  const hostCap = hostCapOf(box);
-  const end = Math.min(
-    from + hours * HOUR_MS,
-    limit ?? Number.POSITIVE_INFINITY,
-    hostCap ?? Number.POSITIVE_INFINITY,
-  );
-  const allowed = (end - from) / HOUR_MS;
+  const { from, end, allowed, hostCap } = reachOf(box, lease, hours, budget, now);
   const target = targetOf(lease);
   const next = await updateLeases(deps.store, (leases) => {
     const raised =
