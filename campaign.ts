@@ -252,9 +252,10 @@ export class CampaignWatch {
         : lease.budget !== null && ends < lease.until
           ? `its budget of ${budgetText(lease.budget)}${spent === null ? "" : ` (spent ${dollars(spent)})`}`
           : "its lease, which the budget no longer covers extending";
-    const text = `Campaign hold on ${name} (#${id}): ${hold.reason}. The box ends in ${span(ends - now)}, held by ${why}, and the budget does not allow more time. It is then saved and destroyed. Copied off first: ${globsOf(hold).join(", ")} into ${destOf(name)}; everything else on the box is lost. vast_extend asks the reader to raise the budget and keeps the box.`;
+    const text = `Campaign hold on ${name} (#${id}): ${hold.reason}. The box ends in ${span(ends - now)}, held by ${why}, so it cannot be extended. It is then saved and destroyed. Copied off first: ${globsOf(hold).join(", ")} into ${destOf(name)}; everything else on the box is lost. vast_extend asks the reader to raise the budget and keeps the box.`;
     try {
-      await this.#api.prompt(hold.leadSession, text);
+      const sent = await this.#api.prompt(hold.leadSession, text);
+      if (!sent.delivered) throw new Error("not delivered");
       this.#api.log("campaign_woke", { instance: id, lead: hold.leadSession.slice(0, 8), ends });
     } catch (caught) {
       // Not delivered: the next tick tries again.
@@ -379,7 +380,9 @@ export async function pullSaves(
       }
       const base = baseOf(glob);
       const names = linesOf(listed.out).flatMap((file) =>
-        file.startsWith(`${base}/`) ? [file.slice(base.length + 1)] : [],
+        file.startsWith(`${base}/`) && !file.split("/").includes("..")
+          ? [file.slice(base.length + 1)]
+          : [],
       );
       if (names.length === 0) continue;
       const copied = await copyOver(routes, deps, base, dest, names);

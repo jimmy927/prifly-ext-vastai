@@ -145,6 +145,29 @@ describe("a held box's lease", () => {
     expect(r.logs.some((l) => l.event === "extended")).toBe(false);
   });
 
+  test("a wake the host did not deliver is tried again on the next tick", async () => {
+    const r = await rig({ withCampaigns: true });
+    r.holds.push(HOLD);
+    await booked(r.folder, 1.5, 2.5);
+    let delivered = false;
+    const api = {
+      ...r.api,
+      prompt: async (session: string, text: string) => {
+        r.prompts.push({ session, text });
+        const answer = { delivered };
+        delivered = true;
+        return answer;
+      },
+    } as ExtensionApi;
+    const enforcer = new Enforcer(api, fileStore(r.folder), config, r.deps);
+    await enforcer.round([running()], NOW);
+    await enforcer.round([running()], NOW + 60_000);
+    await enforcer.round([running()], NOW + 120_000);
+    expect(r.prompts).toHaveLength(2);
+    expect(r.logs.filter((l) => l.event === "campaign_woke")).toHaveLength(1);
+    expect(r.logs.some((l) => l.event === "campaign_wake_failed")).toBe(true);
+  });
+
   test("a lease that still has hours and a budget that covers them wakes nobody", async () => {
     const r = await rig({ withCampaigns: true });
     r.holds.push(HOLD);
