@@ -1,10 +1,12 @@
 # A pull request cannot be merged until every author in it has signed CLA.md,
 # the copyright assignment to The Startup Factory AB. The bot comments on the
 # PR, the author replies with the sign sentence, and the signature is committed
-# to signatures/version1/cla.json on the unprotected `cla-signatures` branch,
-# so master's branch protection never has to let the bot through.
+# to signatures/version2/cla.json on the unprotected `cla-signatures` branch,
+# so main's branch protection never has to let the bot through. Version 1
+# signatures stay in signatures/version1/cla.json, against the text kept at
+# .github/cla/version1.md.
 #
-# pull_request_target runs this workflow from master, never from the PR's own
+# pull_request_target runs this workflow from main, never from the PR's own
 # code, so a fork cannot change what the check does.
 
 name: CLA
@@ -29,18 +31,20 @@ jobs:
         if: >-
           github.event_name == 'pull_request_target' ||
           github.event.comment.body == 'recheck' ||
-          github.event.comment.body == 'I have read the prifly CLA and I hereby assign my contributions to The Startup Factory AB'
+          github.event.comment.body == 'I have read the prifly CLA version 2, I accept it, and I hereby assign my contributions to The Startup Factory AB'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          path-to-signatures: signatures/version1/cla.json
+          path-to-signatures: signatures/version2/cla.json
           path-to-document: https://github.com/jimmy927/prifly-ext-vastai/blob/main/CLA.md
           branch: cla-signatures
           allowlist: jimmy927,dependabot[bot],github-actions[bot]
-          custom-pr-sign-comment: I have read the prifly CLA and I hereby assign my contributions to The Startup Factory AB
+          custom-pr-sign-comment: I have read the prifly CLA version 2, I accept it, and I hereby assign my contributions to The Startup Factory AB
           custom-notsigned-prcomment: >-
             Thank you for the pull request. Before it can be merged, please read
-            the [prifly Contributor License Agreement](https://github.com/jimmy927/prifly-ext-vastai/blob/main/CLA.md),
-            which assigns the copyright in your contribution to The Startup Factory AB,
-            and sign it by commenting with the sentence below.
+            the [prifly Contributor License Agreement, version 2](https://github.com/jimmy927/prifly-ext-vastai/blob/main/CLA.md)
+            and sign it by commenting with the sentence below. In short: you assign the
+            copyright in your contribution to The Startup Factory AB, you are not paid,
+            you accept edits and use without your name beyond the git history, and you
+            keep a licence to use your own contribution for anything you like.
