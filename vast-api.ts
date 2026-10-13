@@ -70,6 +70,15 @@ export const InstanceSchema = z.object({
   mem_limit: field(z.number().nullable()),
   ssh_host: field(text),
   ssh_port: field(z.number()),
+  /** The box's own address: with `ports`, a way in that does not go through the ssh proxy. */
+  public_ipaddr: field(text),
+  /** Docker's port map: `"22/tcp": [{ HostIp, HostPort: "12345" }]`. */
+  ports: field(
+    z.record(
+      z.string(),
+      z.array(z.object({ HostIp: field(z.string()), HostPort: z.string() })).nullable(),
+    ),
+  ),
   /** Epoch seconds. */
   start_date: field(z.number()),
   /**

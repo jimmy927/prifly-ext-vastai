@@ -13,7 +13,7 @@ import {
 import { readLeases } from "./leases";
 import type { ExtensionApi, ExtensionTool, ExtensionToolContext, PickAmount } from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
-import { sshCommand } from "./run";
+import { addressOf, routesOf } from "./run";
 import { budgetText, dollars } from "./spend";
 import type { Store } from "./store";
 import { type Fetch, getAccount, type Instance, listInstances, withKeys } from "./vast-api";
@@ -158,8 +158,8 @@ export function endText(until: number, now: number): string {
 
 /** An ssh command for a box, or null while Vast.ai has not given it an address. */
 export function sshText(box: Instance, sshKey: string | null): string | null {
-  const { ssh_host: host, ssh_port: port } = box;
-  return host === undefined || port === undefined ? null : sshCommand(host, port, sshKey).join(" ");
+  const address = addressOf(box);
+  return address === null ? null : (routesOf(address, sshKey)[0]?.exec.join(" ") ?? null);
 }
 
 /** "0.485": a rate for a table cell the pick card does arithmetic on. */

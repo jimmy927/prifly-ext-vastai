@@ -93,6 +93,11 @@ export type ExtensionMachine = {
   arch?: string;
   /** The argv that runs a command there: `["ssh","root@1.2.3.4","-p","2222"]`. */
   exec?: string[];
+  /**
+   * Every way to run a command there, tried in order (the next when ssh cannot
+   * connect). `exec` is the first one's argv, for a prifly that does not read this.
+   */
+  routes?: { label?: string; exec: string[] }[];
   access?: string;
   trust?: "ask-first" | "use-freely";
   notes?: string;

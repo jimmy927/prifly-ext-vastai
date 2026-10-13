@@ -52,7 +52,7 @@ import {
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
 import { span } from "./rules";
-import { sshCommand, sshKeyPath, sshKeyProblem, sshTarget } from "./run";
+import { addressOf, sshKeyPath, sshKeyProblem, sshRoutes, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { type Store, storeFor } from "./store";
 import { makeTools } from "./tools";
@@ -265,12 +265,20 @@ function shellOf(
   config: Pick<Config, "owner" | "sshKey">,
 ): { title: string; command: string[] } | null {
   const box = boxes.find((b) => String(b.id) === key);
-  const target = box === undefined ? null : sshTarget(box);
-  if (box === undefined || target === null) return null;
-  return {
-    title: `${ownerOf(box, config.owner).name} — ssh root@${target.host}:${target.port}`,
-    command: sshCommand(target.host, target.port, config.sshKey),
-  };
+  return box === undefined ? null : terminalOf(box, ownerOf(box, config.owner).name, config.sshKey);
+}
+
+/** The terminal a click on a running box opens: its first route (the box's own address when it has one). */
+function terminalOf(
+  box: Instance,
+  name: string,
+  sshKey: string | null,
+): { title: string; command: string[] } | null {
+  const target = sshTarget(box);
+  const command = sshRoutes(box, sshKey)[0]?.exec;
+  if (target === null || command === undefined) return null;
+  const shown = target.direct ?? target;
+  return { title: `${name} — ssh root@${shown.host}:${shown.port}`, command };
 }
 
 /** The claimed serverless endpoints (`endpoints.ts`); on a failure, logged, the last ones read. */
@@ -396,7 +404,7 @@ function decoration(
   const status = box.actual_status ?? box.intended_status ?? "?";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   const running = status === "running";
-  const target = sshTarget(box);
+  const terminal = terminalOf(box, name, config.sshKey);
   const load = cardLoad(box, hold, now);
   const loadTone = running ? load.tone : "critical";
   const leased = lease === undefined ? null : leaseLine(lease, config.enforce);
@@ -412,14 +420,7 @@ function decoration(
     ],
     actions: boxActions(box.id ?? "?", name, rate, lease),
     // A click on the box opens ssh to it in a terminal window of prifly's own.
-    ...(target === null
-      ? {}
-      : {
-          terminal: {
-            title: `${name} — ssh root@${target.host}:${target.port}`,
-            command: sshCommand(target.host, target.port, config.sshKey),
-          },
-        }),
+    ...(terminal === null ? {} : { terminal }),
   };
 }
 
@@ -437,11 +438,19 @@ function details(
     `${status} · ${rate}${running ? "" : " — a stopped box still bills disk"}`,
     running ? loadLine : "",
     running ? `Memory ${memory(box)}` : "",
-    box.ssh_host === undefined ? "" : `ssh -p ${box.ssh_port} root@${box.ssh_host}`,
+    sshLine(box),
     unclaimed
       ? "Unclaimed: rented by hand or by other software. Destroy it from its menu if it is not wanted."
       : "",
   ].filter((line) => line !== "");
+}
+
+/** The hover line for ssh: the box's own address when it has one, else the proxy; empty with no address. */
+function sshLine(box: Instance): string {
+  const target = addressOf(box);
+  if (target === null) return "";
+  const shown = target.direct ?? target;
+  return `ssh -p ${shown.port} root@${shown.host}${target.direct === undefined ? "" : " (direct)"}`;
 }
 
 /**
@@ -485,7 +494,7 @@ function machineOf(
 ): ExtensionMachine {
   const { session, name } = ownerOf(box, owner);
   const running = (box.actual_status ?? box.intended_status) === "running";
-  const target = sshTarget(box);
+  const routes = sshRoutes(box, sshKey);
   const gpu = box.gpu_name ?? "";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   return {
@@ -494,7 +503,8 @@ function machineOf(
     status: statusOf(lease, session, owner, enforce),
     actions: boxActions(box.id ?? "?", name, rate, lease),
     os: "linux",
-    exec: target === null ? [] : sshCommand(target.host, target.port, sshKey),
+    exec: routes[0]?.exec ?? [],
+    routes,
     trust: session === null ? "ask-first" : "use-freely",
     ownerSession: session ?? "",
     notes: running ? "" : "not running — a stopped box still bills disk",

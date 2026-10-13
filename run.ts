@@ -23,11 +23,37 @@ export async function run(argv: string[], timeoutMs: number, stdin?: string): Pr
   return { code, out, err };
 }
 
+/**
+ * Where a box answers ssh: its Vast.ai proxy (`host`, `port`), and its own
+ * address (`direct`) when the instance record maps 22/tcp, which keeps
+ * working when the proxy is down.
+ */
+export type SshTarget = { host: string; port: number; direct?: { host: string; port: number } };
+
+/** One way to reach a box: `exec` is the ssh argv, tried in order. Mirrors `ExtensionMachine.routes`. */
+export type Route = { label: string; exec: string[] };
+
+/** The port Vast.ai maps the box's 22/tcp to on its public address, or null when it maps none. */
+function directPort(box: Instance): number | null {
+  const mapped = box.ports?.["22/tcp"]?.[0]?.HostPort;
+  const port = mapped === undefined ? Number.NaN : Number(mapped);
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+}
+
+/** The addresses a box has, running or not; null while Vast.ai has not given it one. */
+export function addressOf(box: Instance): SshTarget | null {
+  const { ssh_host: host, ssh_port: port, public_ipaddr: ip } = box;
+  if (host === undefined || port === undefined) return null;
+  const direct = directPort(box);
+  return ip === undefined || ip === "" || direct === null
+    ? { host, port }
+    : { host, port, direct: { host: ip, port: direct } };
+}
+
 /** Where to ssh to a box: only a running one with an address has somewhere. */
-export function sshTarget(box: Instance): { host: string; port: number } | null {
+export function sshTarget(box: Instance): SshTarget | null {
   const running = (box.actual_status ?? box.intended_status) === "running";
-  const { ssh_host: host, ssh_port: port } = box;
-  return running && host !== undefined && port !== undefined ? { host, port } : null;
+  return running ? addressOf(box) : null;
 }
 
 /**
@@ -48,6 +74,48 @@ export function sshCommand(host: string, port: number, sshKey: string | null): s
     String(port),
     `root@${host}`,
   ];
+}
+
+/**
+ * The one place routes to a box are built: its own address first when it has
+ * one, then the Vast.ai proxy. The proxy died for 30 hours on 2026-10-11
+ * while the boxes ran, so nothing should depend on it alone.
+ */
+export function routesOf(target: SshTarget, sshKey: string | null): Route[] {
+  const proxy = { label: "proxy", exec: sshCommand(target.host, target.port, sshKey) };
+  if (target.direct === undefined) return [proxy];
+  const { host, port } = target.direct;
+  return [{ label: "direct", exec: sshCommand(host, port, sshKey) }, proxy];
+}
+
+/** The routes to a running box, direct first; none while it has no address or is not running. */
+export function sshRoutes(box: Instance, sshKey: string | null): Route[] {
+  const target = sshTarget(box);
+  return target === null ? [] : routesOf(target, sshKey);
+}
+
+/** ssh's own exit code when it cannot connect (the remote command never ran). */
+const SSH_CONNECT_FAILED = 255;
+
+/**
+ * Run `command` on a box over its routes in order, moving to the next only
+ * when ssh could not connect (exit 255). Any other outcome, a remote failure
+ * or a timeout included, is the answer: the box was reached. A remote command
+ * that itself exits 255 also moves on; that costs one repeat, not a wrong answer.
+ */
+export async function runOverRoutes(
+  routes: readonly Route[],
+  command: string,
+  timeoutMs: number,
+  stdin?: string,
+  spawn: (argv: string[], timeoutMs: number, stdin?: string) => Promise<Ran> = run,
+): Promise<Ran> {
+  let last: Ran = { code: -1, out: "", err: "no ssh route to the box" };
+  for (const route of routes) {
+    last = await spawn(unattended(route.exec, command), timeoutMs, stdin);
+    if (last.code !== SSH_CONNECT_FAILED) return last;
+  }
+  return last;
 }
 
 /**
@@ -76,25 +144,21 @@ export async function sshKeyProblem(
     : `sshKey ${path} does not exist on this machine: ssh to the boxes will fail until "sshKey" in config.json names the key`;
 }
 
-/** The argv that runs a shell command on a box, unattended: no password prompt, a bounded wait to connect. */
-function boxArgv(
-  target: { host: string; port: number },
-  sshKey: string | null,
-  command: string,
-): string[] {
-  const [ssh = "ssh", ...rest] = sshCommand(target.host, target.port, sshKey);
+/** The argv that runs a shell command over `exec`, unattended: no password prompt, a bounded wait to connect. */
+function unattended(exec: readonly string[], command: string): string[] {
+  const [ssh = "ssh", ...rest] = exec;
   return [ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", ...rest, command];
 }
 
-/** Run a shell command on a box, unattended: no password prompt, a bounded wait to connect. */
+/** Run a shell command on a box, unattended, direct first and over the proxy when that cannot connect. */
 export function onBox(
-  target: { host: string; port: number },
+  target: SshTarget,
   sshKey: string | null,
   command: string,
   timeoutMs: number,
   stdin?: string,
 ): Promise<Ran> {
-  return run(boxArgv(target, sshKey, command), timeoutMs, stdin);
+  return runOverRoutes(routesOf(target, sshKey), command, timeoutMs, stdin);
 }
 
 /** prifly's vault entry for the key the boxes accept: the manifest's `vault` names it. */
@@ -128,12 +192,25 @@ export function boxRunner(
   if (!api.features?.includes("vault-ssh") || vault?.ssh === undefined) return plain;
   const said = new Set<string>();
   return async (target, sshKey, command, timeoutMs, stdin) => {
-    const argv = boxArgv(target, null, stdin === undefined ? command : withStdin(command, stdin));
-    const ran = await vault.ssh?.(VAULT_SSH_ENTRY, argv, {
-      timeoutMs: Math.min(timeoutMs, VAULT_MAX_MS),
-    });
-    if (ran?.ok) return { code: ran.exitCode ?? -1, out: ran.stdout, err: ran.stderr };
-    const message = ran?.message ?? "vault ssh is not there";
+    let refusal: string | undefined;
+    const viaVault = async (argv: string[]): Promise<Ran> => {
+      if (refusal !== undefined) return { code: -1, out: "", err: refusal };
+      const ran = await vault.ssh?.(VAULT_SSH_ENTRY, argv, {
+        timeoutMs: Math.min(timeoutMs, VAULT_MAX_MS),
+      });
+      if (ran?.ok) return { code: ran.exitCode ?? -1, out: ran.stdout, err: ran.stderr };
+      refusal = ran?.message ?? "vault ssh is not there";
+      return { code: -1, out: "", err: refusal };
+    };
+    const ran = await runOverRoutes(
+      routesOf(target, null),
+      stdin === undefined ? command : withStdin(command, stdin),
+      timeoutMs,
+      undefined,
+      viaVault,
+    );
+    if (refusal === undefined) return ran;
+    const message = refusal;
     if (!said.has(message)) {
       said.add(message);
       api.log("vault_ssh_refused", { entry: VAULT_SSH_ENTRY, message, fallback: sshKey });
