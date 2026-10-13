@@ -1,6 +1,7 @@
 {
   "name": "prifly-ext-vastai",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "description": "A prifly extension: each rented Vast.ai box on the session that rented it.",
   "scripts": {
