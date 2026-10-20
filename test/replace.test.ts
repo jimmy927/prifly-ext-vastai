@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { loggedIn } from "../broken";
 import { type EnforceDeps, Enforcer } from "../enforce";
 import { readLeases } from "../leases";
 import type { ExtensionApi } from "../prifly-api";
@@ -206,6 +207,46 @@ describe("a broken box is replaced within the confirmed budget", () => {
       await round(e, [box(101, "running", NOW)], NOW + minutes * MIN);
     }
     expect(asks(stage.fake)).toEqual([101]);
+  });
+
+  test("a login that Vast's auto-tmux then refuses is a box reached: never replaced", async () => {
+    const stage = await rented();
+    const e = enforcer(stage, {
+      onBox: async () => ({ code: 1, out: "", err: "open terminal failed: not a terminal\n" }),
+    });
+    for (const minutes of [0, 1, 3, 8]) {
+      await round(e, [box(101, "running", NOW)], NOW + minutes * MIN);
+    }
+    expect(asks(stage.fake)).toEqual([101]);
+    expect(e.told()).toEqual([]);
+  });
+
+  test("a refused key (255) is still not reached: replaced after 3 minutes", async () => {
+    const stage = await rented();
+    const e = enforcer(stage, {
+      onBox: async () => ({
+        code: 255,
+        out: "",
+        err: "root@ssh9.vast.ai: Permission denied (publickey).",
+      }),
+    });
+    for (const minutes of [0, 1, 2, 3]) {
+      await round(e, [box(101, "running", NOW)], NOW + minutes * MIN);
+    }
+    expect(asks(stage.fake)).toHaveLength(2);
+    expect(e.told()).toHaveLength(1);
+  });
+});
+
+describe("loggedIn", () => {
+  test("code 0, or a tmux refusal after a login, counts; connect failures never do", () => {
+    expect(loggedIn({ code: 0, out: "", err: "" })).toBe(true);
+    expect(loggedIn({ code: 1, out: "", err: "open terminal failed: not a terminal" })).toBe(true);
+    expect(loggedIn({ code: 1, out: "", err: "duplicate session: ssh_tmux" })).toBe(true);
+    expect(loggedIn({ code: 1, out: "", err: "bash: nope: command not found" })).toBe(false);
+    expect(loggedIn({ code: 255, out: "", err: "Permission denied (publickey)." })).toBe(false);
+    expect(loggedIn({ code: 255, out: "", err: "open terminal failed" })).toBe(false);
+    expect(loggedIn({ code: -1, out: "", err: "duplicate session" })).toBe(false);
   });
 });
 

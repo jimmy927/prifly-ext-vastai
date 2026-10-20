@@ -102,12 +102,15 @@ const DESCRIPTION =
 
 /**
  * Run first in every box's onstart so sshd's "bad ownership or modes" check can
- * never lock us out (VAI-35). Errors are dropped and `|| true` keeps `set -e`
+ * never lock us out (VAI-35), and so Vast's login wrapper does not put every
+ * ssh session in tmux: without `/root/.no_auto_tmux` a non-interactive
+ * `ssh host cmd` prints "open terminal failed: not a terminal" and runs
+ * nothing (VAI-49). Errors are dropped and `|| true` keeps `set -e`
  * from ending the script. No `pkill`/HUP: it kills sshd on images that run it
  * in the foreground (VAI-38).
  */
 export const SSH_KEY_REPAIR =
-  '{ chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
+  '{ touch /root/.no_auto_tmux; chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
 
 /** The repair, then the caller's onstart (or `sleep infinity`, which keeps the box up). */
 export function withSshRepair(onstart?: string): string {

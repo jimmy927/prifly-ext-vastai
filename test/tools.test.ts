@@ -214,6 +214,13 @@ describe("withSshRepair", () => {
     }
   });
 
+  test("the no-auto-tmux file is touched before the caller's onstart, with no pkill", () => {
+    expect(SSH_KEY_REPAIR).toContain("touch /root/.no_auto_tmux");
+    expect(SSH_KEY_REPAIR).not.toMatch(/pkill|HUP/);
+    const out = withSshRepair("echo hi");
+    expect(out.indexOf("touch /root/.no_auto_tmux")).toBeLessThan(out.indexOf("echo hi"));
+  });
+
   const bash = Bun.which("bash");
   // The repair uses absolute paths, so the script under test is pointed into a tmp dir.
   const inside = (home: string) =>
@@ -243,6 +250,31 @@ describe("withSshRepair", () => {
       }
     },
   );
+
+  test.skipIf(!bash)("a failing no-auto-tmux touch cannot stop the caller's onstart", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      // /root does not exist here, so the touch fails first, under bash -e.
+      const ran = await run(inside(home));
+      expect(ran.code).toBe(0);
+      expect(ran.out).toContain("tail-ran");
+      expect(await Bun.file(join(home, "root/.no_auto_tmux")).exists()).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!bash)("the touch creates the file when /root exists", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      await mkdir(join(home, "root"), { recursive: true });
+      const ran = await run(inside(home));
+      expect(ran.out).toContain("tail-ran");
+      expect(await Bun.file(join(home, "root/.no_auto_tmux")).exists()).toBe(true);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 
   // POSIX file modes: Windows has none to check, and the repair runs only on the Linux box.
   const posix = bash !== null && process.platform !== "win32";
