@@ -110,6 +110,18 @@ export type ExtensionMachine = {
   }[];
   /** The session (or its first 8 characters) that rented it, for whom it is use-freely. */
   ownerSession?: string;
+  /**
+   * The host may install Claude Code on this machine over its routes. Only on
+   * a prifly whose `features` include "rent-from-dialog": an older one refuses
+   * the field.
+   */
+  setup?: "claude-code";
+  /**
+   * On the `kind: "provider"` machine: prifly shows a rent row in the New
+   * session dialog for these needs. Only on a prifly whose `features` include
+   * "rent-from-dialog".
+   */
+  rent?: { needs: readonly ("cpu" | "gpu")[] };
   status?: { text: string; tone?: DecorationTone };
   actions?: DecorationAction[];
 };
@@ -180,6 +192,23 @@ export type ExtensionToolContext = {
   /** Aborted when the session or the call goes away. */
   signal: AbortSignal;
 };
+
+/** A rent request from the New session dialog's rent row. */
+export type RentRequest = {
+  /** The full id of the session the box is for. */
+  sessionId: string;
+  need: "cpu" | "gpu";
+  hours: number;
+  purpose: string;
+};
+
+/** `key` is the new box's machine key, `String(box.id)`. */
+export type RentResult = { ok: true; key: string } | { ok: false; reason: string };
+
+/** What a rent handler can ask the reader: a card over the request's session. */
+export type RentUi = { pick: ExtensionToolContext["pick"] };
+
+export type RentHandler = (req: RentRequest, ui: RentUi) => Promise<RentResult>;
 
 export type ExtensionTool = {
   /** `^[a-z][a-z0-9_]{0,47}$`; the session sees it as `mcp__prifly__<name>`. */
@@ -349,6 +378,12 @@ export type ExtensionApi = {
    * shown as the failure. One handler per extension; a second call replaces it.
    */
   onAction(handler: (key: string, action: string) => Promise<string> | string): void;
+  /**
+   * Carry out a rent request from the New session dialog's rent row. One
+   * handler per extension. Only on a prifly whose `features` include
+   * "rent-from-dialog"; absent on an older one: call it as `api.onRent?.(...)`.
+   */
+  onRent?(handler: RentHandler): void;
   /**
    * Tell the reader something that cannot wait for them to look at a chip,
    * under the extension's name; `session` makes a click open that session.

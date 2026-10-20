@@ -18,7 +18,7 @@ import { cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
 import { book, dropBooking, MAX_AHEAD_MS, type Replace, setReplace, updateLeases } from "./leases";
 import { endsTooSoon, fetchOffer, type Offer, perfCells, timeLeft } from "./offers";
-import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
+import type { ExtensionPick, ExtensionTool, ExtensionToolContext, RentUi } from "./prifly-api";
 import { type CellInput, columnsFor, NEEDS } from "./rent-columns";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
@@ -95,7 +95,7 @@ const RentArgs = z.strictObject({
       'One line saying concretely what the job needs, shown on the card as "Needs: ...", e.g. "1-2 threads, no GPU: waits on Gemini".',
     ),
 });
-type RentArgs = z.infer<typeof RentArgs>;
+export type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
   'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. Use vast_offers first to find offer ids. Never rent any other way.';
@@ -191,8 +191,36 @@ async function cardOf(
   };
 }
 
+/** What the reader's card came to: a box (its id and the tool's text), no choice, or no top-up. */
+export type Outcome =
+  | { kind: "rented"; id: number; text: string }
+  | { kind: "none" }
+  | { kind: "declined" };
+
 async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): Promise<string> {
-  const label = sessionLabel(await deps.owner(), ctx.session, args.name);
+  const outcome = await rentOnCard(deps, args, ctx.session, ctx);
+  if (outcome.kind === "none") {
+    return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
+  }
+  if (outcome.kind === "declined") {
+    return "The reader did not rent past what the Vast credit covers. Nothing was rented and nothing is booked.";
+  }
+  return outcome.text;
+}
+
+/**
+ * The rental both entry points share, the `vast_rent` tool and the New session
+ * dialog's rent row: check the label is free, look the offers up, show the
+ * card over `session`, and create the box with what the reader confirmed. A
+ * throw says why nothing was rented.
+ */
+export async function rentOnCard(
+  deps: ToolDeps,
+  args: RentArgs,
+  session: string,
+  ui: RentUi,
+): Promise<Outcome> {
+  const label = sessionLabel(await deps.owner(), session, args.name);
   const keys = await deps.keys();
   // A second box under one label would hold no lease of its own and be destroyed.
   const taken = (await listInstances(keys, deps.get)).some((box) => box.label === label);
@@ -207,10 +235,8 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
   // The dearest row's rate: the limit then holds whichever row the reader picks.
   const dearest = Math.max(...offers.map((offer) => offer.dph_total));
   const guard = creditGuard(deps, await creditNow(deps, { label }), dearest, ACK_TEXT);
-  const answer = await ctx.pick(await cardOf(deps, args, offers, guard));
-  if (answer === null) {
-    return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
-  }
+  const answer = await ui.pick(await cardOf(deps, args, offers, guard));
+  if (answer === null) return { kind: "none" };
   const budget = answer.amount;
   if (budget === null || !Number.isFinite(budget) || budget <= 0) {
     throw new Error("The reader's answer carried no budget, so nothing was rented.");
@@ -219,11 +245,10 @@ async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): 
   if (chosen === undefined)
     throw new Error(`The reader's answer names row ${answer.row}, which is not on the card.`);
   const order = [chosen, ...offers.filter((offer) => offer !== chosen)];
-  const short = await shortfall(deps, ctx, { label, budget, rate: chosen.dph_total });
-  if (short === "declined") {
-    return "The reader did not rent past what the Vast credit covers. Nothing was rented and nothing is booked.";
-  }
-  return await createFirst(deps, { args, label, budget, order, session: ctx.session, short });
+  const short = await shortfall(deps, ui, { label, budget, rate: chosen.dph_total });
+  if (short === "declined") return { kind: "declined" };
+  const made = await createFirst(deps, { args, label, budget, order, session, short });
+  return { kind: "rented", ...made };
 }
 
 /** What the confirmed budget is over the credit, read again now: null when it fits or the credit is unknown. */
@@ -236,7 +261,7 @@ type Short = { over: number; max: number; until: number } | null;
  */
 async function shortfall(
   deps: ToolDeps,
-  ctx: ExtensionToolContext,
+  ui: RentUi,
   { label, budget, rate }: { label: string; budget: number; rate: number },
 ): Promise<Short | "declined"> {
   const credit = await creditNow(deps, { label });
@@ -247,7 +272,7 @@ async function shortfall(
   const short = { over: budget - limit.max, max: limit.max, until };
   deps.log("rent_over_credit", { label, budget, max: limit.max, credit: account.credit });
   if (hasLimit(deps)) return short;
-  return (await confirmOver(ctx, { what: "Rent", amount: budget, limit })) ? short : "declined";
+  return (await confirmOver(ui, { what: "Rent", amount: budget, limit })) ? short : "declined";
 }
 
 type Attempt = {
@@ -260,7 +285,10 @@ type Attempt = {
 };
 
 /** Try the offers in order with the confirmed budget; the booking is dropped unless a box was created. */
-async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
+async function createFirst(
+  deps: ToolDeps,
+  attempt: Attempt,
+): Promise<{ id: number; text: string }> {
   const failures: string[] = [];
   let created = false;
   try {
@@ -269,7 +297,7 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
       if (box !== null) {
         created = true;
         await keepReplacements(deps, attempt, { offer, index, box });
-        return await describe(deps, attempt, offer, box);
+        return { id: box.id, text: await describe(deps, attempt, offer, box) };
       }
     }
   } finally {

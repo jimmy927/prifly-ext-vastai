@@ -11,7 +11,13 @@ import {
   overText,
 } from "./credit";
 import { readLeases } from "./leases";
-import type { ExtensionApi, ExtensionTool, ExtensionToolContext, PickAmount } from "./prifly-api";
+import type {
+  ExtensionApi,
+  ExtensionTool,
+  ExtensionToolContext,
+  PickAmount,
+  RentUi,
+} from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
 import { addressOf, routesOf } from "./run";
 import { budgetText, dollars } from "./spend";
@@ -50,6 +56,11 @@ export function hasLinks(deps: ToolDeps): boolean {
 /** Whether this prifly's pick card takes `titles` and `cellKinds`. */
 export function hasCells(deps: ToolDeps): boolean {
   return deps.features.includes("pick-cells");
+}
+
+/** Whether this prifly shows rent and setup in its New session dialog (`setup`, `rent`, `api.onRent`). */
+export function hasRentFromDialog(features: readonly string[] | undefined): boolean {
+  return features?.includes("rent-from-dialog") ?? false;
 }
 
 /**
@@ -220,7 +231,7 @@ export function guardedAmount(
  * reader's word: ask on a second card. True when they gave it.
  */
 export async function confirmOver(
-  ctx: ExtensionToolContext,
+  ctx: RentUi,
   {
     what,
     amount,

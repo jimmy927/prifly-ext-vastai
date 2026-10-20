@@ -51,10 +51,12 @@ import {
 } from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
+import { rentHandler } from "./rent-dialog";
 import { span } from "./rules";
 import { addressOf, sshKeyPath, sshKeyProblem, sshRoutes, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { type Store, storeFor } from "./store";
+import { hasRentFromDialog, type ToolDeps } from "./tool-kit";
 import { makeTools } from "./tools";
 import {
   destroyInstance,
@@ -196,7 +198,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         show(api, boxes, judged, config, gpuHold, now, claims);
         // Absent on a prifly older than "machines": the boxes still show.
         const waiting = leases.filter((l) => l.box === null);
-        api.machines?.report(machinesOf(boxes, config, judged, waiting, credit));
+        api.machines?.report(machinesOf(boxes, config, judged, waiting, credit, api.features));
       }
     } catch (caught) {
       // No API key, a refused one, or offline: said in the log, and tried
@@ -209,21 +211,22 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     }
   };
   // Absent on a prifly older than "extension tools": the boxes still show.
-  api.tools?.register(
-    makeTools({
-      store,
-      owner: () => readOwner(api.folder, process.env),
-      sshKey: config.sshKey,
-      keys,
-      get: fetch,
-      now: Date.now,
-      sleep: Bun.sleep,
-      refresh: () => void refresh(),
-      log: (event, fields) => api.log(event, fields),
-      features: api.features ?? [],
-      credit: config.credit,
-    }),
-  );
+  const toolDeps: ToolDeps = {
+    store,
+    owner: () => readOwner(api.folder, process.env),
+    sshKey: config.sshKey,
+    keys,
+    get: fetch,
+    now: Date.now,
+    sleep: Bun.sleep,
+    refresh: () => void refresh(),
+    log: (event, fields) => api.log(event, fields),
+    features: api.features ?? [],
+    credit: config.credit,
+  };
+  api.tools?.register(makeTools(toolDeps));
+  // The New session dialog's rent row, only on a prifly that has one.
+  if (hasRentFromDialog(api.features)) api.onRent?.(rentHandler(toolDeps));
   // A box's menu, on its chip or machine card, and the same buttons on its panel card.
   const act = async (key: string, action: string): Promise<string> => {
     const hours = EXTEND_HOURS[action];
@@ -461,15 +464,18 @@ function sshLine(box: Instance): string {
  * owner's, is ask-first for all, since nobody here knows its history. Renting costs money, so the
  * provider is ask-first.
  */
-function machinesOf(
+export function machinesOf(
   boxes: readonly Instance[],
   config: Config,
   judged: ReadonlyMap<number, Judged>,
   waiting: readonly Lease[],
   credit: CreditView | null,
+  /** `api.features`: with "rent-from-dialog" boxes offer `setup`, the provider a `rent` row. */
+  features?: readonly string[],
 ): ExtensionMachine[] {
+  const fromDialog = hasRentFromDialog(features);
   const items = boxes.map((box) =>
-    machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id)),
+    machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id), fromDialog),
   );
   const provider: ExtensionMachine = {
     key: "provider",
@@ -477,6 +483,7 @@ function machinesOf(
     label: "Vast.ai",
     trust: "ask-first",
     ...providerCard(waiting, credit),
+    ...(fromDialog ? { rent: { needs: ["cpu", "gpu"] as const } } : {}),
     notes:
       "Rents Linux GPU or CPU boxes by the hour, only through the vast_offers and vast_rent tools: the reader confirms the budget of each rental. Read the vastai skill first.",
     capabilities: [
@@ -487,10 +494,11 @@ function machinesOf(
   return [...items, provider];
 }
 
-function machineOf(
+export function machineOf(
   box: Instance,
   { sshKey, owner, enforce }: Config,
   lease: Judged | undefined,
+  fromDialog = false,
 ): ExtensionMachine {
   const { session, name } = ownerOf(box, owner);
   const running = (box.actual_status ?? box.intended_status) === "running";
@@ -507,6 +515,8 @@ function machineOf(
     routes,
     trust: session === null ? "ask-first" : "use-freely",
     ownerSession: session ?? "",
+    // prifly may install Claude Code on a box that is up, over its routes.
+    ...(fromDialog && running ? { setup: "claude-code" as const } : {}),
     notes: running ? "" : "not running — a stopped box still bills disk",
     capabilities:
       gpu === ""
