@@ -40,10 +40,11 @@ function directPort(box: Instance): number | null {
   return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
 }
 
-/** The addresses a box has, running or not; null while Vast.ai has not given it one. */
+/** The addresses a box has, running or not; null while Vast.ai has not given it a usable one (no host, or a port outside 1..65535). */
 export function addressOf(box: Instance): SshTarget | null {
   const { ssh_host: host, ssh_port: port, public_ipaddr: ip } = box;
-  if (host === undefined || port === undefined) return null;
+  if (host === undefined || host === "") return null;
+  if (port === undefined || !Number.isInteger(port) || port < 1 || port > 65535) return null;
   const direct = directPort(box);
   return ip === undefined || ip === "" || direct === null
     ? { host, port }

@@ -4,7 +4,7 @@
 // the extension (`spend-panel.ts`).
 
 import { drawBurn } from "./burn.js";
-import { drawMachines } from "./machines.js";
+import { copyCommand, drawMachines } from "./machines.js";
 import { dayMs, dayText, linesOf, money, rank, titleOf } from "./model.js";
 import { drawSpend } from "./spend.js";
 import { drawTimeline } from "./timeline.js";
@@ -116,13 +116,7 @@ function cardClicks() {
     if (open !== undefined) parent.postMessage({ type: "prifly-open-session", session: open }, "*");
     if (shell !== undefined) parent.postMessage({ type: "prifly-open-terminal", key: shell }, "*");
     if (copy !== undefined) {
-      void navigator.clipboard?.writeText(copy).then(
-        () => {
-          button.textContent = "Copied";
-          setTimeout(() => (button.textContent = "Copy"), 1500);
-        },
-        () => {},
-      );
+      void copyCommand(button, copy, { clipboard: navigator.clipboard });
     }
     if (ask !== undefined) {
       ui.confirm = ask;

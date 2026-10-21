@@ -83,6 +83,37 @@ function sshLine(box, ui) {
   return `<div class="ssh"><code title="${cmd}">${cmd}</code><button type="button" class="plain small" data-copy="${cmd}">Copy</button>${ui.shell ? `<button type="button" class="plain small primary" data-shell="${esc(box.key)}">Open shell</button>` : ""}</div>`;
 }
 
+/** Select all of `code`'s text, so Ctrl+C copies it where the clipboard cannot be written. */
+export function selectText(code) {
+  const range = document.createRange();
+  range.selectNodeContents(code);
+  const selection = getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+/**
+ * Copy a card's ssh command. The panel can sit in a cross-origin frame where
+ * the clipboard refuses (or is missing): then the button says "Copy failed" and
+ * the command is selected in full, so the copy is never silently lost.
+ */
+export async function copyCommand(button, text, { clipboard, select = selectText }) {
+  let copied = false;
+  try {
+    await clipboard.writeText(text);
+    copied = true;
+  } catch {
+    // Reported below: the button and the selection.
+  }
+  if (!copied) {
+    const code = button.closest(".ssh")?.querySelector("code");
+    if (code) select(code);
+  }
+  button.textContent = copied ? "Copied" : "Copy failed";
+  setTimeout(() => (button.textContent = "Copy"), copied ? 1500 : 2500);
+  return copied;
+}
+
 /** Extend, while the lease rules act on it; Destroy, asked again on the card itself. */
 function buttons(box, ui) {
   const key = esc(box.key);

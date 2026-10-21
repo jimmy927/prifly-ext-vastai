@@ -64,6 +64,11 @@ describe("parsePage", () => {
     expect(rows).toEqual([{ id: 7, label: "s-0123abcd/x" }]);
   });
 
+  test("a null ssh host or port is a missing one", () => {
+    const { rows } = parsePage({ instances: [{ id: 1, ssh_host: null, ssh_port: null }] });
+    expect(rows).toEqual([{ id: 1 }]);
+  });
+
   test("a row that is not a box is skipped", () => {
     expect(parsePage({ instances: [null, 3, { id: 1 }] }).rows).toEqual([{ id: 1 }]);
   });
