@@ -39,15 +39,23 @@ describe("machines with rent-from-dialog", () => {
     expect(provider?.rent).toEqual({ needs: ["cpu", "gpu"] });
   });
 
-  test("a running box with a foreign (ODI-style) label and no session offers no setup", () => {
-    const foreign = box({ label: "gpu-box-6a78df90" });
-    expect(machineOf(foreign, CONFIG, undefined, true).setup).toBeUndefined();
+  test("a running box with an ODI-style label and no session offers setup and has no owner session", () => {
+    const foreign = box({ label: "gpu-box-7ddfcb80" });
+    const one = machineOf(foreign, CONFIG, undefined, true);
+    expect(one.setup).toBe("claude-code");
+    expect(one.ownerSession).toBe("");
+    expect(one.trust).toBe("ask-first");
     const machines = machinesOf([foreign], CONFIG, new Map(), [], null, ["rent-from-dialog"]);
-    expect(machines.find((m) => m.key === "9001")?.setup).toBeUndefined();
+    const listed = machines.find((m) => m.key === "9001");
+    expect(listed?.setup).toBe("claude-code");
+    expect(listed?.ownerSession).toBe("");
   });
 
-  test("a running box claimed by a session offers setup claude-code", () => {
-    expect(machineOf(box(), CONFIG, undefined, true).setup).toBe("claude-code");
+  test("a running box claimed by a session offers setup claude-code with that session as owner", () => {
+    const claimed = machineOf(box(), CONFIG, undefined, true);
+    expect(claimed.setup).toBe("claude-code");
+    expect(claimed.ownerSession).not.toBe("");
+    expect(claimed.trust).toBe("use-freely");
   });
 
   test("a box that is not running offers no setup", () => {

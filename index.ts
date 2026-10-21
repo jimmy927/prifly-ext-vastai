@@ -515,9 +515,9 @@ export function machineOf(
     routes,
     trust: session === null ? "ask-first" : "use-freely",
     ownerSession: session ?? "",
-    // prifly may install Claude Code on a box this extension rented for a session and that is up.
-    // A box another program rented on the same account (no session in its label) gets none.
-    ...(fromDialog && running && session !== null ? { setup: "claude-code" as const } : {}),
+    // prifly may install Claude Code on any box that is up, whoever rented it; ownership
+    // (`ownerSession`, `trust`) is separate and stays empty / ask-first for a box without a session.
+    ...(fromDialog && running ? { setup: "claude-code" as const } : {}),
     notes: running ? "" : "not running — a stopped box still bills disk",
     capabilities:
       gpu === ""
