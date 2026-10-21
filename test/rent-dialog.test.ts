@@ -39,6 +39,17 @@ describe("machines with rent-from-dialog", () => {
     expect(provider?.rent).toEqual({ needs: ["cpu", "gpu"] });
   });
 
+  test("a running box with a foreign (ODI-style) label and no session offers no setup", () => {
+    const foreign = box({ label: "gpu-box-6a78df90" });
+    expect(machineOf(foreign, CONFIG, undefined, true).setup).toBeUndefined();
+    const machines = machinesOf([foreign], CONFIG, new Map(), [], null, ["rent-from-dialog"]);
+    expect(machines.find((m) => m.key === "9001")?.setup).toBeUndefined();
+  });
+
+  test("a running box claimed by a session offers setup claude-code", () => {
+    expect(machineOf(box(), CONFIG, undefined, true).setup).toBe("claude-code");
+  });
+
   test("a box that is not running offers no setup", () => {
     const stopped = box({ actual_status: "exited" });
     expect(machineOf(stopped, CONFIG, undefined, true).setup).toBeUndefined();
