@@ -94,20 +94,31 @@ export function selectText(code) {
 
 /**
  * Copy a card's ssh command. The panel can sit in a cross-origin frame where
- * the clipboard refuses (or is missing): then the button says "Copy failed" and
- * the command is selected in full, so the copy is never silently lost.
+ * the async clipboard refuses (or is missing): then the command is selected and
+ * copied with execCommand("copy"), which a frame without clipboard-write still
+ * allows from a click. Only when both routes fail does the button say "Copy
+ * failed", with the command left selected so Ctrl+C still works.
  */
-export async function copyCommand(button, text, { clipboard, select = selectText }) {
+export async function copyCommand(
+  button,
+  text,
+  { clipboard, select = selectText, exec = document.execCommand.bind(document) },
+) {
   let copied = false;
   try {
     await clipboard.writeText(text);
     copied = true;
   } catch {
-    // Reported below: the button and the selection.
+    // Falls back to the selection and execCommand below.
   }
   if (!copied) {
     const code = button.closest(".ssh")?.querySelector("code");
     if (code) select(code);
+    try {
+      copied = exec("copy") === true;
+    } catch {
+      // Both routes failed: reported on the button, the text stays selected.
+    }
   }
   button.textContent = copied ? "Copied" : "Copy failed";
   setTimeout(() => (button.textContent = "Copy"), copied ? 1500 : 2500);

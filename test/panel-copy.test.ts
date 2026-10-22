@@ -33,6 +33,9 @@ describe("copying a card's ssh command", () => {
     const ok = await copyCommand(b, CMD, {
       clipboard: { writeText: async (t: string) => void written.push(t) },
       select: (c: unknown) => selected.push(c),
+      exec: () => {
+        throw new Error("execCommand must not run when the async copy worked");
+      },
     });
     expect(ok).toBe(true);
     expect(written).toEqual([CMD]);
@@ -40,6 +43,27 @@ describe("copying a card's ssh command", () => {
     expect(selected).toEqual([]);
     for (const fn of timers) fn();
     expect(b.textContent).toBe("Copy");
+  });
+
+  test("a refused async copy falls back to execCommand and says Copied", async () => {
+    const calls: string[] = [];
+    const selected: unknown[] = [];
+    const b = button();
+    const ok = await copyCommand(b, CMD, {
+      clipboard: { writeText: () => Promise.reject(new Error("denied")) },
+      select: (c: unknown) => {
+        calls.push("select");
+        selected.push(c);
+      },
+      exec: (command: string) => {
+        calls.push(command);
+        return true;
+      },
+    });
+    expect(ok).toBe(true);
+    expect(calls).toEqual(["select", "copy"]);
+    expect(selected).toEqual([code]);
+    expect(b.textContent).toBe("Copied");
   });
 
   const failures: [string, unknown][] = [
@@ -54,19 +78,31 @@ describe("copying a card's ssh command", () => {
     ],
     ["no clipboard at all", undefined],
   ];
+  const execFailures: [string, () => boolean][] = [
+    ["execCommand returning false", () => false],
+    [
+      "execCommand throwing",
+      () => {
+        throw new Error("unsupported");
+      },
+    ],
+  ];
   for (const [name, clipboard] of failures) {
-    test(`${name} says Copy failed and selects the command`, async () => {
-      const selected: unknown[] = [];
-      const b = button();
-      const ok = await copyCommand(b, CMD, {
-        clipboard,
-        select: (c: unknown) => selected.push(c),
+    for (const [execName, exec] of execFailures) {
+      test(`${name} and ${execName} says Copy failed and leaves the command selected`, async () => {
+        const selected: unknown[] = [];
+        const b = button();
+        const ok = await copyCommand(b, CMD, {
+          clipboard,
+          select: (c: unknown) => selected.push(c),
+          exec,
+        });
+        expect(ok).toBe(false);
+        expect(b.textContent).toBe("Copy failed");
+        expect(selected).toEqual([code]);
+        for (const fn of timers) fn();
+        expect(b.textContent).toBe("Copy");
       });
-      expect(ok).toBe(false);
-      expect(b.textContent).toBe("Copy failed");
-      expect(selected).toEqual([code]);
-      for (const fn of timers) fn();
-      expect(b.textContent).toBe("Copy");
-    });
+    }
   }
 });
