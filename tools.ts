@@ -26,6 +26,7 @@ import {
   updateLeases,
 } from "./leases";
 import {
+  cudaText,
   endsInText,
   type OfferFilters,
   perfCells,
@@ -151,6 +152,13 @@ const OffersArgs = z.strictObject({
     .describe(
       "Hours the box must stay rentable; hosts set an end date after which Vast stops the box. Offers with no end date always pass.",
     ),
+  min_cuda: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      "Least CUDA version the host supports (Vast's cuda_max_good), e.g. 12.9. A CUDA 12.x image needs a host whose cuda_max_good is at least that version, or it fails with 'cudaGetDeviceCount() Error 804: forward compatibility was attempted on non supported HW'. Offers that report no CUDA version are left out.",
+    ),
   limit: z.number().int().min(1).max(50).default(10),
 });
 
@@ -171,6 +179,7 @@ function offersTool(deps: ToolDeps): ExtensionTool {
         region: args.region,
         minInetDownMbps: args.min_inet_down_mbps,
         minHours: args.min_hours,
+        minCuda: args.min_cuda,
         limit: args.limit,
       };
       const offers = await searchOffers(filters, deps.get);
@@ -180,7 +189,8 @@ function offersTool(deps: ToolDeps): ExtensionTool {
       const lines = offers.map((o) => {
         const gpus = (o.num_gpus ?? 1) > 1 ? `${o.num_gpus}x ` : "";
         const perf = perfCells(o, cpus);
-        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM · GPU perf ${perf.gpuPerf} (${perf.gpuPerDollar} per $/h) · ${perf.memBandwidth} GB/s memory · ${perf.cpu} · CPU perf ${perf.cpuPerf} (${perf.cpuPerDollar} per $/h) · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · verified ${perf.verified} · ${o.geolocation ?? "?"} · ${perf.down} Mbps down · ${endsInText(o, now)}`;
+        const cuda = cudaText(o);
+        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM${cuda === "" ? "" : ` · ${cuda}`} · GPU perf ${perf.gpuPerf} (${perf.gpuPerDollar} per $/h) · ${perf.memBandwidth} GB/s memory · ${perf.cpu} · CPU perf ${perf.cpuPerf} (${perf.cpuPerDollar} per $/h) · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · verified ${perf.verified} · ${o.geolocation ?? "?"} · ${perf.down} Mbps down · ${endsInText(o, now)}`;
       });
       return `${lines.join("\n")}\n\nRates include the disk; "per $/h" divides by that rate; CPU perf is PassMark scaled to the rented threads ("unscored": no PassMark entry). Offers go in a moment: vast_rent looks each up again.`;
     },

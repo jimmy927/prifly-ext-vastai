@@ -52,6 +52,10 @@ export const OfferSchema = z.object({
   cpu_name: field(text),
   /** The whole machine's threads; `cpu_cores_effective` is the offer's. */
   cpu_cores: field(z.number()),
+  /** The newest CUDA the host's driver runs without forward compatibility: 12.2. */
+  cuda_max_good: field(z.number()),
+  /** The host's NVIDIA driver: "535.309.01". */
+  driver_version: field(text),
   /** "verified", "unverified" or "deverified". */
   verification: field(text),
   rentable: field(z.boolean()),
@@ -76,6 +80,8 @@ export type OfferFilters = {
   minInetDownMbps?: number | undefined;
   /** Hours the box must stay rentable: the host's end date is at least this far off. */
   minHours?: number | undefined;
+  /** Least `cuda_max_good`: an offer that reports none never passes. */
+  minCuda?: number | undefined;
   limit: number;
 };
 
@@ -96,8 +102,16 @@ async function bundles(query: Record<string, unknown>, get: Fetch): Promise<Offe
 
 /** The server-side half of a search; the rest is checked locally in `matches`. */
 function queryOf(filters: OfferFilters): Record<string, unknown> {
-  const { minVramGb, minCpuCores, minRamGb, minDiskGb, maxDph, minInetDownMbps, minHours } =
-    filters;
+  const {
+    minVramGb,
+    minCpuCores,
+    minRamGb,
+    minDiskGb,
+    maxDph,
+    minInetDownMbps,
+    minHours,
+    minCuda,
+  } = filters;
   return {
     rentable: { eq: true },
     num_gpus: { gte: 1 },
@@ -109,6 +123,7 @@ function queryOf(filters: OfferFilters): Record<string, unknown> {
     ...(maxDph === undefined ? {} : { dph_total: { lte: maxDph } }),
     ...(minInetDownMbps === undefined ? {} : { inet_down: { gte: minInetDownMbps } }),
     ...(minHours === undefined ? {} : { duration: { gte: minHours * 3600 } }),
+    ...(minCuda === undefined ? {} : { cuda_max_good: { gte: minCuda } }),
     allocated_storage: minDiskGb ?? DEFAULT_DISK_GB,
     limit: 64,
     type: "ask",
@@ -141,7 +156,9 @@ export function matches(offer: Offer, filters: OfferFilters): boolean {
     below(offer.cpu_cores_effective, minCpuCores) ||
     below(offer.cpu_ram, minRamGb, 1000) ||
     below(offer.disk_space, minDiskGb) ||
-    below(offer.inet_down, filters.minInetDownMbps)
+    below(offer.inet_down, filters.minInetDownMbps) ||
+    // An offer that reports no CUDA fails, as it does a floor on any other number: it may not run the image.
+    below(offer.cuda_max_good, filters.minCuda)
   );
 }
 
@@ -171,6 +188,20 @@ export function vramText(offer: Offer): string {
   const gpus = offer.num_gpus ?? 1;
   const each = Math.round(offer.gpu_ram / 1000);
   return gpus > 1 ? `${gpus * each} GB (${gpus} × ${each})` : `${each} GB`;
+}
+
+/**
+ * The host's CUDA and driver, "CUDA 12.2 · drv 535.309" (the driver without its
+ * build number): only what Vast reports, "" when it reports neither.
+ */
+export function cudaText(offer: Offer): string {
+  const driver = offer.driver_version?.split(".").slice(0, 2).join(".");
+  return [
+    offer.cuda_max_good === undefined ? "" : `CUDA ${offer.cuda_max_good}`,
+    driver === undefined || driver === "" ? "" : `drv ${driver}`,
+  ]
+    .filter((part) => part !== "")
+    .join(" · ");
 }
 
 /**

@@ -418,7 +418,7 @@ tool acts on the calling session's boxes only.
 
 | Tool | What it does |
 |---|---|
-| `vast_offers` | The cheapest rentable GPU machines that pass the filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `min_hours`, `limit` default 10), from the public `GET /api/v0/bundles/`. No key. Returns offer ids. |
+| `vast_offers` | The cheapest rentable GPU machines that pass the filters (GPU name, `min_vram_gb`, `min_cpu_cores`, `min_ram_gb`, `min_disk_gb`, `max_dph`, `min_reliability` default 0.98, `region`, `min_inet_down_mbps`, `min_hours`, `min_cuda`, `limit` default 10), from the public `GET /api/v0/bundles/`. No key. Returns offer ids. Each line shows the host's max CUDA and driver (`CUDA 12.2 · drv 535.309`). Set `min_cuda` (Vast's `cuda_max_good`, e.g. 12.9) for a CUDA 12.x image: on an older host it fails with `cudaGetDeviceCount() Error 804: forward compatibility was attempted on non supported HW`. Offers that report no CUDA version are left out then. |
 | `vast_rent` | `name` (8 characters at most), `budget`, `offers`, `image`, `disk_gb`, `purpose`, `need` (`gpu`, `cpu` or `io`: which columns the card keeps), `need_note` (what the job needs, shown as "Needs: ..."), optionally `onstart`, `env`, `ports`. Shows the card; books and creates only after the reader's click. |
 | `vast_boxes` | The account's credit, burn, runway and committed spend, then this session's boxes: status, $/h, spent of budget, lease end, ssh. |
 | `vast_logs` | `name`, `tail`: asks Vast.ai for the box's logs (`PUT /api/v0/instances/request_logs/<id>/`), fetches the returned URL, returns the end. |

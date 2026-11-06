@@ -61,6 +61,72 @@ describe("vast_offers", () => {
     expect(await tool("vast_offers").call({}, ctxFor([]).ctx)).toContain("ends in 9 h");
   });
 
+  describe("CUDA", () => {
+    const hosts = () => [
+      offer(1, 0.1, { cuda_max_good: 12.2, driver_version: "535.309.01" }),
+      offer(2, 0.2, { cuda_max_good: 12.9, driver_version: "575.57.08" }),
+      offer(3, 0.3),
+    ];
+    const linesOf = (text: string) => text.split("\n").filter((l) => l.startsWith("offer "));
+
+    test("min_cuda keeps only hosts at or above it, and sends it to Vast's search", async () => {
+      const fake = vast(hosts());
+      const urls: string[] = [];
+      const { tool } = await setup({
+        ...fake,
+        get: async (url, init) => {
+          urls.push(url);
+          return fake.get(url, init);
+        },
+      });
+      const text = await tool("vast_offers").call({ min_cuda: 12.9 }, ctxFor([]).ctx);
+      expect(linesOf(text).map((l) => l.split(":")[0])).toEqual(["offer 2"]);
+      const searches = urls.filter((u) => u.includes("/api/v0/bundles/"));
+      expect(searches.length).toBeGreaterThan(0);
+      for (const url of searches) {
+        const q = JSON.parse(new URL(url).searchParams.get("q") ?? "{}");
+        expect(q.cuda_max_good).toEqual({ gte: 12.9 });
+      }
+    });
+
+    test("without min_cuda every host is listed, each with its CUDA and driver or nothing, and no cuda filter is sent", async () => {
+      const fake = vast(hosts());
+      const urls: string[] = [];
+      const { tool } = await setup({
+        ...fake,
+        get: async (url, init) => {
+          urls.push(url);
+          return fake.get(url, init);
+        },
+      });
+      const lines = linesOf(await tool("vast_offers").call({}, ctxFor([]).ctx));
+      expect(lines.map((l) => l.split(":")[0])).toEqual(["offer 1", "offer 2", "offer 3"]);
+      expect(lines[0]).toContain("CUDA 12.2 · drv 535.309");
+      expect(lines[1]).toContain("CUDA 12.9 · drv 575.57");
+      expect(lines[2]).not.toContain("CUDA");
+      expect(lines[2]).not.toContain("drv");
+      for (const url of urls.filter((u) => u.includes("/api/v0/bundles/"))) {
+        expect(JSON.parse(new URL(url).searchParams.get("q") ?? "{}")).not.toHaveProperty(
+          "cuda_max_good",
+        );
+      }
+    });
+
+    test("an offer with only one of the two shows just that one", async () => {
+      const { tool } = await setup(
+        vast([
+          offer(1, 0.1, { cuda_max_good: 12.4 }),
+          offer(2, 0.2, { driver_version: "550.54.14" }),
+        ]),
+      );
+      const lines = linesOf(await tool("vast_offers").call({}, ctxFor([]).ctx));
+      expect(lines[0]).toContain("CUDA 12.4 ·");
+      expect(lines[0]).not.toContain("drv");
+      expect(lines[1]).toContain("drv 550.54 ·");
+      expect(lines[1]).not.toContain("CUDA");
+    });
+  });
+
   test("says so when nothing passes", async () => {
     const { tool } = await setup(vast([]));
     expect(await tool("vast_offers").call({}, ctxFor([]).ctx)).toContain("No offers pass");
