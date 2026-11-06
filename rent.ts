@@ -76,7 +76,7 @@ const RentArgs = z.strictObject({
     .number()
     .positive()
     .describe(
-      "Your suggested budget in dollars for the whole rental. The reader sees it on the card and may change it; the confirmed amount is the box's hard limit: it is saved and destroyed when it has cost this much.",
+      "Your suggested budget in dollars for the whole rental. The reader sees it on the card and may change it; the confirmed amount is the box's limit: with lease enforcement on (the default) it is saved and destroyed when it has cost this much.",
     ),
   offers: z
     .array(z.number().int().positive())
@@ -131,7 +131,7 @@ const RentArgs = z.strictObject({
 export type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. With ollama (models, optional context_length) the box serves Ollama for prifly\'s model providers: no image or onstart needed, and 11434 is never opened (prifly tunnels over ssh). Use vast_offers first to find offer ids. Never rent any other way.';
+  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. With lease enforcement on (the default), if the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. With ollama (models, optional context_length) the box serves Ollama for prifly\'s model providers: no image or onstart needed, and 11434 is never opened (prifly tunnels over ssh). Use vast_offers first to find offer ids. Never rent any other way.';
 
 /**
  * Run first in every box's onstart so sshd's "bad ownership or modes" check can
@@ -228,9 +228,12 @@ export function rentTool(deps: ToolDeps): ExtensionTool {
 }
 
 /** The hint under the amount field: the session's reason for the suggestion. */
-function hintOf(purpose: string): string {
+function hintOf(purpose: string, enforce: boolean): string {
   const reason = purpose.replace(/[.\s]+$/, "").slice(0, 240);
-  return `Suggested by Claude: ${reason}. The box is saved and destroyed when it has cost this much.`;
+  const ends = enforce
+    ? "The box is saved and destroyed when it has cost this much."
+    : "Lease enforcement is off, so nothing destroys the box at this amount: it bills until vast_cancel ends it.";
+  return `Suggested by Claude: ${reason}. ${ends}`;
 }
 
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
@@ -292,7 +295,7 @@ async function cardOf(
       prefix: "$",
       value: args.budget,
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
-      ...guardedAmount(deps, hintOf(purposeOf(args, 240)), guard),
+      ...guardedAmount(deps, hintOf(purposeOf(args, 240), deps.enforce), guard),
     },
   };
 }
@@ -513,7 +516,7 @@ async function describe(
   deps.refresh();
   return [
     `Rented ${args.name}: Vast.ai #${id}, label ${label}.`,
-    `Rate: ${dollars(offer.dph_total)}/h. Budget: ${budgetText(budget)}, the reader's confirmed amount: the box is saved and destroyed when it has cost that much.`,
+    `Rate: ${dollars(offer.dph_total)}/h. Budget: ${budgetText(budget)}, the reader's confirmed amount${deps.enforce ? ": the box is saved and destroyed when it has cost that much" : ". Lease enforcement is off, so nothing destroys the box at that amount: it bills until vast_cancel ends it"}.`,
     `Lease until ${endText(until, deps.now())}; vast_extend adds time. vast_cancel ends it.`,
     ...(short === null
       ? []

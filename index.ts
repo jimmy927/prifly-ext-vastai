@@ -21,14 +21,15 @@
  *
  * A session's box holds a lease (`leases.ts`, booked by the `vast_rent` tool),
  * and `enforce.ts` destroys the box when it has none, it ran out, or it has
- * cost its budget; with `"enforce": false`, the default, it only says what it
- * would do. Sessions rent, extend, cancel and inspect boxes only through the
+ * cost its budget; with `"enforce": false` in config.json (enforcement is on
+ * unless it says so) it only says what it would do. `vast_cancel` destroys
+ * either way. Sessions rent, extend, cancel and inspect boxes only through the
  * tools this serves (`tools.ts`), and the plugin's hook refuses the CLI.
  *
  * Everything goes over Vast.ai's REST API (`vast-api.ts`), with the API key
  * where the CLI keeps it (`~/.config/vastai/vast_api_key`). Config (optional),
  * in this folder's `config.json`:
- *   { "refreshSeconds": 60, "enforce": true, "owner": "jimmy", "sshKey": "~/.ssh/vast_ed25519" }
+ *   { "refreshSeconds": 60, "enforce": false, "owner": "jimmy", "sshKey": "~/.ssh/vast_ed25519" }
  */
 
 import { homedir } from "node:os";
@@ -73,7 +74,7 @@ import {
  * this machine; a missing file is logged (`ssh_key_missing`), not fatal. On a
  * prifly with "vault-ssh", the save, guard and probe use the vault's
  * `vast-ssh` entry instead, and this key only when the vault refuses (`run.ts`
- * `boxRunner`). `enforce`: destroy what breaks a lease.
+ * `boxRunner`). `enforce`: destroy what breaks a lease; on unless config.json says `false`.
  * `credit`: the margin kept free of the account's credit, and the runway warnings.
  */
 type Config = {
@@ -83,6 +84,9 @@ type Config = {
   owner: string;
   credit: CreditConfig;
 };
+
+/** What the tools read of the config: the ssh key, the credit margin, and whether leases are enforced. */
+const toolConfig = ({ sshKey, credit, enforce }: Config) => ({ sshKey, credit, enforce });
 
 /** What the panel reads, while the extension runs. */
 let panelDeps: PanelDeps | null = null;
@@ -214,7 +218,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   const toolDeps: ToolDeps = {
     store,
     owner: () => readOwner(api.folder, process.env),
-    sshKey: config.sshKey,
+    ...toolConfig(config),
     keys,
     get: fetch,
     now: Date.now,
@@ -222,7 +226,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     refresh: () => void refresh(),
     log: (event, fields) => api.log(event, fields),
     features: api.features ?? [],
-    credit: config.credit,
+    takeDown: (box) => enforcer.cancelNow(box),
   };
   api.tools?.register(makeTools(toolDeps));
   // The New session dialog's rent row, only on a prifly that has one.
@@ -312,14 +316,15 @@ async function logKeyProblem(api: Pick<ExtensionApi, "log">, sshKey: string | nu
   if (problem !== null) api.log("ssh_key_missing", { path: sshKey, message: problem });
 }
 
-async function readConfig(folder: string): Promise<Config> {
+/** `config.json` in `folder`, with the defaults for what it leaves out; enforcement is on unless it says `"enforce": false`. */
+export async function readConfig(folder: string): Promise<Config> {
   const raw = (await Bun.file(join(folder, "config.json"))
     .json()
     .catch(() => ({}))) as Partial<Config>;
   return {
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
     sshKey: raw.sshKey == null ? null : sshKeyPath(raw.sshKey, homedir()),
-    enforce: raw.enforce === true,
+    enforce: raw.enforce !== false,
     owner: await readOwner(folder, process.env),
     credit: creditConfig(raw.credit),
   };

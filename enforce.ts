@@ -20,8 +20,12 @@
  * - Every leased box that is running gets the on-box guard (`guard.sh`) and
  *   its lease's end, so it destroys itself when prifly is not running.
  *
- * With `enforce` off (the default) nothing is destroyed and no guard is
- * installed: every step is only said — "would destroy lc-box3".
+ * With `enforce` on (the default) a destroy is only told once the instance
+ * list no longer has the box; one that fails, or leaves the box listed, is
+ * told as failed and tried again the next round. With `"enforce": false` in
+ * `config.json` nothing is destroyed by the rules and no guard is installed:
+ * every step is only said — "would destroy lc-box3". A `vast_cancel` still
+ * destroys (`cancelNow`): it is the reader's order, whatever `enforce` says.
  *
  * Only this owner's boxes are acted on, and only those of a session the host
  * knows (`api.sessions()`, past ones too): another owner's box is left alone,
@@ -41,6 +45,7 @@ import {
   committedOf,
   runwayHours,
 } from "./credit";
+import { budgetNotice, leaseNotice } from "./lease-notices";
 import { type Lease, leaseOf, readLeases, tidy, updateLeases } from "./leases";
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import {
@@ -54,12 +59,14 @@ import {
   type Verdict,
 } from "./rules";
 import { boxRunner, type onBox, sshTarget } from "./run";
-import { BUDGET_WARN, budgetText, cappedUntil, dollars, spentLine, spentOf } from "./spend";
+import { BUDGET_WARN, cappedUntil, dollars, spentOf } from "./spend";
 import type { Store } from "./store";
+import { type TakeDown, waitGone } from "./take-down";
 import {
   destroyInstance,
   type Fetch,
   type Instance,
+  isListed,
   readApiKeys,
   requestLogs,
   withKeys,
@@ -67,6 +74,7 @@ import {
 
 export type EnforceConfig = {
   sshKey: string | null;
+  /** Destroy what breaks a lease; false only when `config.json` says `"enforce": false`. */
   enforce: boolean;
   /** The label owner this prifly manages: see `owner.ts`. */
   owner: string;
@@ -90,6 +98,11 @@ export type Judged = {
 /** What the enforcer does to Vast.ai, replaceable so a test destroys nothing. */
 export type EnforceDeps = BrokenDeps & {
   destroy: (id: number) => Promise<void>;
+  /**
+   * Whether Vast.ai's instance list, read afresh, still has the box. A destroy
+   * is only told once this says no; left out, a destroy that went through counts.
+   */
+  isListed?: (id: number) => Promise<boolean>;
   /** Run a command on a box over ssh; the real one (`boxRunner`) when left out. */
   onBox?: typeof onBox;
   /** The on-box guard's source; `guard.sh` beside this file when left out. */
@@ -104,10 +117,15 @@ export type EnforceDeps = BrokenDeps & {
  * Destroy over REST with the account's key, as `guard.sh` does on the box:
  * prifly's vault entry first, when `vault` is there, then the CLI's key files.
  */
-export function restDeps(vault: ExtensionApi["vault"], get: Fetch = fetch): EnforceDeps {
+export function restDeps(
+  vault: ExtensionApi["vault"],
+  get: Fetch = fetch,
+  sleep: (ms: number) => Promise<unknown> = Bun.sleep,
+): EnforceDeps {
   const keys = () => readApiKeys(process.env, homedir(), vault);
   return {
-    destroy: async (id) => withKeys(await keys(), (key) => destroyInstance(key, id, get)),
+    destroy: async (id) => withKeys(await keys(), (key) => destroyInstance(key, id, get, sleep)),
+    isListed: async (id) => isListed(await keys(), id, get),
     logs: async (id) => withKeys(await keys(), (key) => requestLogs(key, id, LOG_TAIL, get)),
     keys,
     get,
@@ -139,8 +157,8 @@ export class Enforcer {
   readonly #idle = new IdleWatch();
   /** Notices already given, so each is said once. */
   readonly #told = new Set<string>();
-  /** Boxes being saved and destroyed now. */
-  readonly #taking = new Set<number>();
+  /** Boxes being saved and destroyed now, each with its take-down. */
+  readonly #taking = new Map<number, Promise<TakeDown>>();
   /** The lease end each box's guard holds, as last written there. */
   readonly #guarded = new Map<number, number>();
   /** Boxes whose guard is being written now: ssh to a box can take a while. */
@@ -340,47 +358,12 @@ export class Enforcer {
     const session = parseLabel(box.label ?? "")?.session;
     const tell = (key: string, text: string, tone: DecorationTone) =>
       this.#tell(`${id}:${key}`, text, tone, session);
-    switch (verdict.kind) {
-      case "unbooked":
-        tell(
-          "unbooked",
-          `${name} has no lease and is destroyed in ${span(verdict.leftMs)}: Extend lease on its menu keeps it.`,
-          "critical",
-        );
-        break;
-      case "ending":
-        tell(
-          `ending:${until}`,
-          `${name}'s lease ends in ${span(verdict.leftMs)}: vast_extend adds time, or it is destroyed ${span(GRACE_MS)} after.`,
-          "warning",
-        );
-        break;
-      case "grace":
-        tell(
-          `grace:${until}`,
-          `${name}'s lease is over: it is saved and destroyed in ${span(verdict.leftMs)} unless extended.`,
-          "critical",
-        );
-        break;
-      case "due":
-        if (this.#config.enforce) void this.#takeDown(box, id, verdict.reason);
-        else
-          tell(
-            `would:${verdict.reason}`,
-            `Would destroy ${name} (${verdict.reason}) — lease enforcement is off, so it is left running.`,
-            "warning",
-          );
-        break;
-      default:
-        break;
-    }
+    const notice = leaseNotice(verdict, name, until, this.#config.enforce);
+    if (notice !== null) tell(notice.key, notice.text, notice.tone);
+    if (verdict.kind === "due") this.#due(box, id, verdict.reason, tell);
     if (budget !== null && spent !== null && spent >= budget * BUDGET_WARN && spent < budget) {
       // Once for each budget: a raised one is told again when it is nearly spent.
-      tell(
-        `budget:${budget}`,
-        `${name} has cost ${spentLine(spent, budget)}: at ${budgetText(budget)} it is saved and destroyed. vast_extend asks the reader to raise the budget.`,
-        "warning",
-      );
+      tell(`budget:${budget}`, budgetNotice(name, spent, budget, this.#config.enforce), "warning");
     }
     // Said once for each stretch of idleness: a box that works again may be told again later.
     if (idleMs < IDLE_MS) this.#told.delete(`${id}:idle`);
@@ -396,6 +379,24 @@ export class Enforcer {
     }
   }
 
+  /** A box that is due: taken down with enforcement on (the take-down tells and logs how it went), else only said. */
+  #due(
+    box: Instance,
+    id: number,
+    reason: string,
+    tell: (key: string, text: string, tone: DecorationTone) => void,
+  ): void {
+    if (this.#config.enforce) {
+      void this.#takeDown(box, id, reason);
+      return;
+    }
+    tell(
+      `would:${reason}`,
+      `Would destroy ${nameOf(box)} (${reason}) — lease enforcement is off, so it is left running.`,
+      "warning",
+    );
+  }
+
   #tell(key: string, text: string, tone: DecorationTone, session: string | undefined): void {
     if (this.#told.has(key)) return;
     this.#told.add(key);
@@ -403,10 +404,27 @@ export class Enforcer {
     this.#api.notify?.(text, { tone, ...(session === undefined ? {} : { session }) });
   }
 
+  /**
+   * Save and destroy a box now, whatever `enforce` says: the reader's order
+   * (`vast_cancel`), through the same take-down the rules use. Answers when the
+   * box is gone from Vast.ai's list or the take-down failed.
+   */
+  cancelNow(box: Instance): Promise<TakeDown> {
+    if (box.id === undefined) return Promise.resolve({ kind: "failed", why: "the box has no id" });
+    return this.#takeDown(box, box.id, "cancelled");
+  }
+
+  /** One take-down at a time for each box: a second call gets the first one's answer. Never rejects. */
+  #takeDown(box: Instance, id: number, reason: string): Promise<TakeDown> {
+    const running = this.#taking.get(id);
+    if (running !== undefined) return running;
+    const job = this.#carryOut(box, id, reason).finally(() => this.#taking.delete(id));
+    this.#taking.set(id, job);
+    return job;
+  }
+
   /** Save the box, once more after 10 minutes if that fails, then destroy it — unless it was extended meanwhile. */
-  async #takeDown(box: Instance, id: number, reason: string): Promise<void> {
-    if (this.#taking.has(id)) return;
-    this.#taking.add(id);
+  async #carryOut(box: Instance, id: number, reason: string): Promise<TakeDown> {
     const name = nameOf(box);
     try {
       this.#tell(
@@ -416,8 +434,11 @@ export class Enforcer {
         undefined,
       );
       const secured = await this.#secure(box, id, name);
-      if (secured === null) return;
+      if (secured === null) return { kind: "kept" };
       await this.#deps.destroy(id);
+      if (this.#deps.isListed !== undefined) {
+        await waitGone(this.#deps.isListed, id, this.#deps.sleep ?? Bun.sleep);
+      }
       await updateLeases(this.#store, (leases) => ({
         leases: leases.filter((lease) => lease.box !== id),
         result: null,
@@ -429,13 +450,18 @@ export class Enforcer {
         "info",
         undefined,
       );
+      return { kind: "destroyed", hook: secured.hook, pulled: secured.pulled };
     } catch (caught) {
-      this.#api.log("take_down_failed", {
-        instance: id,
-        message: caught instanceof Error ? caught.message : String(caught),
-      });
-    } finally {
-      this.#taking.delete(id);
+      const why = caught instanceof Error ? caught.message : String(caught);
+      this.#api.log("take_down_failed", { instance: id, message: why });
+      const again = this.#config.enforce ? " It is tried again within a minute." : "";
+      this.#tell(
+        `${id}:destroy-failed:${why}`,
+        `${name} could not be destroyed (${reason}): ${why}. It is still running and billing.${again}`,
+        "critical",
+        undefined,
+      );
+      return { kind: "failed", why };
     }
   }
 
