@@ -43,6 +43,28 @@ import { type CreateRequest, createInstance, listInstances, OfferGone, withKeys 
 
 const PORT = /^\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/;
 
+/** An Ollama model name such as `llama3.2:3b` or `hf.co/<user>/<repo>:Q4_K_M`: no quote, space, `$` or leading dash can get through. */
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]{0,199}$/;
+const OLLAMA_PORT = 11434;
+export const OLLAMA_IMAGE = "ollama/ollama";
+export const OLLAMA_CONTEXT_DEFAULT = 65536;
+
+const OllamaArgs = z.strictObject({
+  models: z
+    .array(z.string().regex(MODEL, "not an Ollama model name (letters, digits, . _ - / : @)"))
+    .min(1)
+    .max(8)
+    .describe('Models to pull, e.g. "qwen2.5-coder:7b" or "hf.co/<user>/<repo>:Q4_K_M".'),
+  context_length: z
+    .number()
+    .int()
+    .min(512)
+    .max(1048576)
+    .optional()
+    .describe(`OLLAMA_CONTEXT_LENGTH, default ${OLLAMA_CONTEXT_DEFAULT}.`),
+});
+type OllamaOptions = z.infer<typeof OllamaArgs>;
+
 const RentArgs = z.strictObject({
   name: z
     .string()
@@ -63,12 +85,20 @@ const RentArgs = z.strictObject({
     .describe(
       "Offer ids (ask_contract_id from vast_offers), best first. If the chosen one is gone, the next that fits the budget is rented.",
     ),
-  image: z.string().min(1).describe("Docker image, e.g. ubuntu:22.04"),
+  image: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Docker image, e.g. ubuntu:22.04. Required, except with ollama, where it defaults to ollama/ollama.",
+    ),
   disk_gb: z.number().positive().describe("Disk in GB. It is billed, so it is in the rate."),
   onstart: z
     .string()
     .optional()
-    .describe("Shell commands to run on start. Default: sleep infinity, so a bare image stays up."),
+    .describe(
+      "Shell commands to run on start. Default: sleep infinity, so a bare image stays up. Not with ollama, which writes the onstart itself.",
+    ),
   env: z
     .record(z.string(), z.string())
     .optional()
@@ -77,6 +107,9 @@ const RentArgs = z.strictObject({
     .array(z.string().regex(PORT))
     .optional()
     .describe('Ports to open, e.g. "8080:8080/tcp".'),
+  ollama: OllamaArgs.optional().describe(
+    "Serve Ollama for prifly's model providers, in one choice: the image defaults to ollama/ollama, the onstart starts `ollama serve` on the box's own 127.0.0.1:11434 and pulls the models, and port 11434 is never opened. prifly reaches it through `ssh -L <port>:127.0.0.1:11434`. Do not pass onstart, or a port 11434, with it.",
+  ),
   purpose: z
     .string()
     .min(1)
@@ -98,7 +131,7 @@ const RentArgs = z.strictObject({
 export type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. Use vast_offers first to find offer ids. Never rent any other way.';
+  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. With ollama (models, optional context_length) the box serves Ollama for prifly\'s model providers: no image or onstart needed, and 11434 is never opened (prifly tunnels over ssh). Use vast_offers first to find offer ids. Never rent any other way.';
 
 /**
  * Run first in every box's onstart so sshd's "bad ownership or modes" check can
@@ -112,6 +145,79 @@ const DESCRIPTION =
 export const SSH_KEY_REPAIR =
   '{ touch /root/.no_auto_tmux; chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
 
+/** `'...'` for the shell, whatever the text holds. */
+function quoted(text: string): string {
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The onstart that serves Ollama on the box's own loopback: the server in the
+ * background (its log in /var/log/ollama.log), a wait until the API answers,
+ * each model pulled, then the box kept up. Vast's ssh launch mode replaces the
+ * image's `ollama` entrypoint and runs this, so `ollama serve` is started here.
+ * 11434 is bound to 127.0.0.1 and never mapped: prifly tunnels to it over ssh.
+ */
+export function ollamaScript({ models, context_length }: OllamaOptions): string {
+  const context = context_length ?? OLLAMA_CONTEXT_DEFAULT;
+  return [
+    `export OLLAMA_HOST=127.0.0.1:${OLLAMA_PORT} OLLAMA_CONTEXT_LENGTH=${context} OLLAMA_KEEP_ALIVE=-1`,
+    "nohup ollama serve >>/var/log/ollama.log 2>&1 &",
+    "SERVE_PID=$!",
+    "for _ in $(seq 1 150); do ollama list >/dev/null 2>&1 && break; sleep 2; done",
+    // So that `ssh box curl 127.0.0.1:11434/api/tags` works; the image may not ship curl.
+    "command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl; } >>/var/log/ollama.log 2>&1 || true",
+    ...models.map(
+      (model) =>
+        `ollama pull ${quoted(model)} >>/var/log/ollama-pull.log 2>&1 || echo ${quoted(`pull failed: ${model}`)} >>/var/log/ollama-pull.log`,
+    ),
+    'wait "$SERVE_PID"',
+    "sleep infinity",
+  ].join("\n");
+}
+
+/** What the create request carries for the args: image, onstart, env. A throw says what conflicts. */
+export function launchOf(args: RentArgs): {
+  image: string;
+  onstart: string;
+  env: Record<string, string>;
+} {
+  const ports = args.ports ?? [];
+  const ollama = args.ollama;
+  if (ollama !== undefined) {
+    if (args.onstart !== undefined) {
+      throw new Error("ollama writes the onstart itself: pass either ollama or onstart, not both");
+    }
+    if (ports.some((port) => port.split(/[:/]/).includes(String(OLLAMA_PORT)))) {
+      throw new Error(`Port ${OLLAMA_PORT} is never opened: prifly reaches Ollama through ssh -L`);
+    }
+  } else if (args.image === undefined) {
+    throw new Error("image is required unless ollama is given");
+  }
+  return {
+    image: args.image ?? OLLAMA_IMAGE,
+    onstart: withSshRepair(ollama === undefined ? args.onstart : ollamaScript(ollama)),
+    env: {
+      ...(args.env ?? {}),
+      ...Object.fromEntries(ports.map((port) => [`-p ${port}`, "1"])),
+      ...(ollama === undefined
+        ? {}
+        : {
+            OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
+            OLLAMA_CONTEXT_LENGTH: String(ollama.context_length ?? OLLAMA_CONTEXT_DEFAULT),
+            OLLAMA_KEEP_ALIVE: "-1",
+          }),
+    },
+  };
+}
+
+/** The purpose as the card shows it: a model provider says so first. */
+function purposeOf(args: RentArgs, max: number): string {
+  const own = args.purpose.trim().slice(0, max);
+  return args.ollama === undefined
+    ? own
+    : `Ollama model provider: ${args.ollama.models.join(", ")}. ${own}`;
+}
+
 /** The repair, then the caller's onstart (or `sleep infinity`, which keeps the box up). */
 export function withSshRepair(onstart?: string): string {
   return `${SSH_KEY_REPAIR}\n${onstart ?? "sleep infinity"}`;
@@ -123,10 +229,7 @@ export function rentTool(deps: ToolDeps): ExtensionTool {
 
 /** The hint under the amount field: the session's reason for the suggestion. */
 function hintOf(purpose: string): string {
-  const reason = purpose
-    .trim()
-    .replace(/[.\s]+$/, "")
-    .slice(0, 240);
+  const reason = purpose.replace(/[.\s]+$/, "").slice(0, 240);
   return `Suggested by Claude: ${reason}. The box is saved and destroyed when it has cost this much.`;
 }
 
@@ -173,7 +276,7 @@ async function cardOf(
     return columns.map((column) => column.cell(input));
   });
   return {
-    title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. Needs: ${args.need_note.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
+    title: `Rent ${args.name}: ${purposeOf(args, 120)}. Needs: ${args.need_note.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
     columns: columns.map((column) => column.name),
     rows: built.map((row) => row.map((cell) => cell.text)),
     ...(links ? { links: built.map((row) => row.map((cell) => cell.link ?? null)) } : {}),
@@ -189,7 +292,7 @@ async function cardOf(
       prefix: "$",
       value: args.budget,
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
-      ...guardedAmount(deps, hintOf(args.purpose), guard),
+      ...guardedAmount(deps, hintOf(purposeOf(args, 240)), guard),
     },
   };
 }
@@ -223,6 +326,7 @@ export async function rentOnCard(
   session: string,
   ui: RentUi,
 ): Promise<Outcome> {
+  launchOf(args); // a conflict throws before anything is looked up
   const label = sessionLabel(await deps.owner(), session, args.name);
   const keys = await deps.keys();
   // A second box under one label would hold no lease of its own and be destroyed.
@@ -375,16 +479,7 @@ async function tryOffer(
   }
   await updateLeases(deps.store, (leases) => book(leases, label, hours, now, budget));
   const until = now + hours * HOUR_MS;
-  const request = {
-    image: args.image,
-    disk: args.disk_gb,
-    label,
-    onstart: withSshRepair(args.onstart),
-    env: {
-      ...(args.env ?? {}),
-      ...Object.fromEntries((args.ports ?? []).map((port) => [`-p ${port}`, "1"])),
-    },
-  };
+  const request = { ...launchOf(args), disk: args.disk_gb, label };
   try {
     const box = await withKeys(await deps.keys(), (key) =>
       createInstance(key, id, request, deps.get),
