@@ -4,7 +4,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CREDIT_DEFAULTS } from "../credit";
+import { type EnforceDeps, Enforcer } from "../enforce";
 import type {
+  ExtensionApi,
   ExtensionPick,
   ExtensionPickAnswer,
   ExtensionTool,
@@ -12,6 +14,7 @@ import type {
 } from "../prifly-api";
 import { fileStore, type Store } from "../store";
 import { makeTools } from "../tools";
+import { destroyInstance, isListed, withKeys } from "../vast-api";
 
 export const H = 3_600_000;
 export const NOW = 1_800_000_000_000;
@@ -40,6 +43,28 @@ const CPU_PAGE = "https://www.cpubenchmark.net/high_end_cpus.html";
 type Put = { url: string; body: Record<string, unknown> };
 
 type Creates = Record<number, "ok" | "gone" | "error">;
+
+/**
+ * What `DELETE /api/v0/instances/<id>/` does on the fake: it answers each of
+ * `answers` first (429, …), then 200, and a 200 takes the box off `instances`
+ * unless `keep` is set. `deletes` is the id of every DELETE sent.
+ */
+function destroying(instances: Record<string, unknown>[]) {
+  const destroy: { answers: number[]; keep: boolean; deletes: number[] } = {
+    answers: [],
+    keep: false,
+    deletes: [],
+  };
+  const destroyBox = (id: number) => {
+    destroy.deletes.push(id);
+    const status = destroy.answers.shift() ?? 200;
+    if (status !== 200) return Response.json({ msg: "API requests too frequent" }, { status });
+    const at = destroy.keep ? -1 : instances.findIndex((box) => box["id"] === id);
+    if (at >= 0) instances.splice(at, 1);
+    return Response.json({ success: true });
+  };
+  return { destroy, destroyBox };
+}
 
 /** A fake Vast.ai: offers by id, the account's boxes, and what each create answers. */
 export function vast(offers: Offer[], creates: Creates = {}) {
@@ -80,10 +105,14 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     });
     return Response.json({ success: true, new_contract: 9000 + id });
   };
+  const { destroy, destroyBox } = destroying(instances);
   const user = () =>
     account.user === null ? new Response("down", { status: 500 }) : Response.json(account.user);
-  const get = async (url: string, init: RequestInit): Promise<Response> =>
-    url === CPU_PAGE ? passmark(init) : await vastGet(url, init);
+  const get = async (url: string, init: RequestInit): Promise<Response> => {
+    if (url === CPU_PAGE) return passmark(init);
+    if (init.method === "DELETE") return destroyBox(Number(new URL(url).pathname.split("/")[4]));
+    return await vastGet(url, init);
+  };
   const vastGet = async (url: string, init: RequestInit): Promise<Response> => {
     const u = new URL(url);
     const put = init.method === "PUT";
@@ -99,17 +128,52 @@ export function vast(offers: Offer[], creates: Creates = {}) {
     if (url === "https://logs.example/l") return new Response("a\nb\nc\nd");
     return new Response("unexpected", { status: 500 });
   };
-  return { get, puts, instances, account, cpuPage };
+  return { get, puts, instances, account, cpuPage, destroy };
 }
 
-/** The tools on a fake Vast.ai, keeping their leases in `store` (the folder's files when left out). */
+/** What a test may change about the tools' enforcer and the cancel's wait. */
+export type SetupOptions = {
+  /** Lease enforcement as config.json has it; on, the default, unless a test turns it off. */
+  enforce?: boolean;
+  cancelWaitMs?: number;
+  enforceDeps?: Partial<EnforceDeps>;
+};
+
+/**
+ * The tools on a fake Vast.ai, keeping their leases in `store` (the folder's
+ * files when left out). Their take-down is a real `Enforcer` over the same
+ * fake: DELETE goes to the fake, the box list is read from it, and nothing
+ * waits for real; `notices` is what the enforcer told the reader.
+ */
 export async function setup(
   fake: ReturnType<typeof vast>,
   features: readonly string[] = [],
   storeOf: (folder: string) => Store = fileStore,
+  options: SetupOptions = {},
 ) {
   const folder = await mkdtemp(join(tmpdir(), "vastai-tools-"));
   const store = storeOf(folder);
+  const notices: string[] = [];
+  const api = {
+    folder,
+    log: () => undefined,
+    notify: (text: string) => notices.push(text),
+    sessions: () => [{ id: SESSION, title: "", cwd: "/", state: "done" }],
+  } as unknown as ExtensionApi;
+  const sleep = async () => undefined;
+  const enforce = options.enforce ?? true;
+  const enforcer = new Enforcer(
+    api,
+    store,
+    { sshKey: null, enforce, owner: "jimmy" },
+    {
+      destroy: (id) => withKeys(["key"], (key) => destroyInstance(key, id, fake.get, sleep)),
+      isListed: (id) => isListed(["key"], id, fake.get),
+      onBox: async () => ({ code: 0, out: "", err: "" }),
+      sleep,
+      ...options.enforceDeps,
+    },
+  );
   const tools = makeTools({
     store,
     owner: async () => "jimmy",
@@ -117,18 +181,21 @@ export async function setup(
     keys: async () => ["key"],
     get: fake.get,
     now: () => NOW,
-    sleep: async () => undefined,
+    sleep,
     refresh: () => undefined,
     log: () => undefined,
     features,
     credit: CREDIT_DEFAULTS,
+    enforce,
+    takeDown: (box) => enforcer.cancelNow(box),
+    ...(options.cancelWaitMs === undefined ? {} : { cancelWaitMs: options.cancelWaitMs }),
   });
   const tool = (name: string): ExtensionTool => {
     const found = tools.find((t) => t.name === name);
     if (found === undefined) throw new Error(`no tool ${name}`);
     return found;
   };
-  return { folder, store, tool };
+  return { folder, store, tool, notices, enforcer };
 }
 
 /** A fake session that answers each pick card from a script, and notes the world as it asked. */

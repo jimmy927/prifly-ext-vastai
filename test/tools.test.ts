@@ -173,6 +173,18 @@ describe("vast_rent", () => {
     });
   });
 
+  test("with lease enforcement off, neither the card nor the answer promises a destroy", async () => {
+    const fake = vast([offer(101, 0.5)]);
+    const { tool } = await setup(fake, [], undefined, { enforce: false });
+    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
+    const text = await tool("vast_rent").call({ ...RENT, offers: [101] }, ctx);
+    expect(text).toContain("Rented job1");
+    expect(text).toContain("Lease enforcement is off");
+    expect(text).not.toContain("saved and destroyed");
+    expect(cards[0]?.amount?.hint).toContain("Lease enforcement is off");
+    expect(cards[0]?.amount?.hint).not.toContain("saved and destroyed");
+  });
+
   test("offers that are gone, or cannot run an hour within the budget, are left off", async () => {
     const fake = vast([offer(101, 0.5), offer(103, 25)]);
     const { tool } = await setup(fake);

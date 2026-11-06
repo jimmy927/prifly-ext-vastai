@@ -96,6 +96,8 @@ describe("the rent handler", () => {
       log: () => undefined,
       features: ["rent-from-dialog"],
       credit: CREDIT_DEFAULTS,
+      enforce: true,
+      takeDown: async () => ({ kind: "failed", why: "not used here" }),
     };
     return { fake, store, handler: rentHandler(deps) };
   }

@@ -210,6 +210,51 @@ describe("destroyInstance", () => {
     expect(new Headers(seen[0]?.init.headers).get("Authorization")).toBe("Bearer secret");
   });
 
+  test("a 429 is asked again after a wait, and the second answer counts", async () => {
+    const { seen, get } = recording(
+      new Response(JSON.stringify({ msg: "API requests too frequent" }), { status: 429 }),
+      Response.json({ success: true }),
+    );
+    const waits: number[] = [];
+    await destroyInstance("k", 5, get, async (ms) => void waits.push(ms));
+    expect(seen).toHaveLength(2);
+    expect(waits).toEqual([2000]);
+  });
+
+  test("Retry-After sets the wait, a 5xx is retried, and a 404 is not", async () => {
+    const waits: number[] = [];
+    const sleep = async (ms: number) => void waits.push(ms);
+    const slow = new Response("{}", { status: 429, headers: { "Retry-After": "7" } });
+    const retried = recording(slow, new Response("bad", { status: 502 }), new Response("{}"));
+    await destroyInstance("k", 5, retried.get, sleep);
+    expect(waits).toEqual([7000, 4000]);
+    const gone = recording(new Response("{}", { status: 404 }), new Response("{}"));
+    await expect(destroyInstance("k", 5, gone.get, sleep)).rejects.toThrow("(404)");
+    expect(gone.seen).toHaveLength(1);
+  });
+
+  test("a 429 every time fails after four tries, with Vast.ai's reason", async () => {
+    const answers = Array.from(
+      { length: 6 },
+      () => new Response(JSON.stringify({ msg: "API requests too frequent" }), { status: 429 }),
+    );
+    const { seen, get } = recording(...answers);
+    const failure = await destroyInstance("k", 5, get, async () => undefined).catch(
+      (e: Error) => e,
+    );
+    expect((failure as Error).message).toBe(
+      "Vast.ai destroy of #5 failed (429): API requests too frequent",
+    );
+    expect(seen).toHaveLength(4);
+  });
+
+  test("a 200 whose body says success false is a failure", async () => {
+    const { get } = recording(Response.json({ success: false, msg: "instance is locked" }));
+    await expect(destroyInstance("k", 5, get)).rejects.toThrow(
+      "Vast.ai destroy of #5 failed: instance is locked",
+    );
+  });
+
   test("a refusal says why, without the key", async () => {
     const { get } = recording(
       new Response(JSON.stringify({ msg: "no such instance" }), { status: 404 }),

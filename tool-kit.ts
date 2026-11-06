@@ -22,6 +22,7 @@ import { parseLabel, sessionLabel, span } from "./rules";
 import { addressOf, routesOf } from "./run";
 import { budgetText, dollars } from "./spend";
 import type { Store } from "./store";
+import type { TakeDown } from "./take-down";
 import { type Fetch, getAccount, type Instance, listInstances, withKeys } from "./vast-api";
 
 /** Everything the tools reach outside themselves, so a test can hand in fakes. */
@@ -41,6 +42,12 @@ export type ToolDeps = {
   /** What the prifly host can do beyond the base contract (`api.features`). */
   features: readonly string[];
   credit: CreditConfig;
+  /** Whether the enforcer destroys what breaks a lease or a budget (`enforce` in config.json, on by default). */
+  enforce: boolean;
+  /** Save and destroy a box now, confirmed against Vast.ai's list: `Enforcer.cancelNow`. */
+  takeDown: (box: Instance) => Promise<TakeDown>;
+  /** How long `vast_cancel` waits for the take-down before it says it is still going; 4 minutes when left out. */
+  cancelWaitMs?: number;
 };
 
 /** Whether this prifly's pick card takes `amount.limit`. */

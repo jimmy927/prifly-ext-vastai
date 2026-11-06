@@ -19,7 +19,7 @@ A [prifly](https://github.com/jimmy927/prifly) extension for
   (`vast_offers`, `vast_rent`, `vast_boxes`, `vast_logs`, `vast_extend`,
   `vast_cancel`, `vast_claim_endpoint`). `vast_rent` shows the offers on a card with an editable
   budget; nothing is rented until you click **Rent**, and the amount you
-  confirm is the box's hard limit. Right-click a session and choose **Rent a
+  confirm is the box's limit (it is destroyed at it, unless enforcement is off). Right-click a session and choose **Rent a
   Vast.ai machine…** to start one.
 - **Refuses the CLI.** A hook in the plugin refuses `vastai create`,
   `destroy`, `label` and the other writing commands, `vastlease`, and
@@ -253,10 +253,15 @@ you confirmed on the rental card.
   and red past it. Its menu has "Extend lease by 1 hour" and "Extend lease by
   4 hours". On a box with no lease, these give it one: that is how the reader
   keeps a box.
-- **Enforcement is off until you turn it on.** Set `"enforce": true` in
-  `config.json`. Until then nothing is destroyed and no guard is installed;
-  the extension only says "Would destroy lc-box3 (no lease)". Notices go
-  through prifly's `api.notify`, and only to the log on a prifly without it.
+- **Enforcement is on unless you turn it off.** Without a `config.json`, a
+  box with no lease, an ended lease or a spent budget is saved and destroyed,
+  and a destroy is only reported once Vast.ai's instance list no longer has the
+  box (a 429 or 5xx from Vast.ai is asked again; a failed one is reported and
+  tried again the next round). Set `"enforce": false` in `config.json` and
+  nothing is destroyed by the rules and no guard is installed; the extension
+  only says "Would destroy lc-box3 (no lease)". `vast_cancel` destroys
+  either way. Notices go through prifly's `api.notify`, and only to the log on
+  a prifly without it.
 
 ### The account's credit: `credit.ts`
 
@@ -423,7 +428,7 @@ tool acts on the calling session's boxes only.
 | `vast_boxes` | The account's credit, burn, runway and committed spend, then this session's boxes: status, $/h, spent of budget, lease end, ssh. |
 | `vast_logs` | `name`, `tail`: asks Vast.ai for the box's logs (`PUT /api/v0/instances/request_logs/<id>/`), fetches the returned URL, returns the end. |
 | `vast_extend` | `name`, `hours`: free within the budget, otherwise asks the reader to raise it. |
-| `vast_cancel` | `name`: ends the lease; the enforcer saves and destroys the box within a minute. |
+| `vast_cancel` | `name`: ends the lease, saves the box and destroys it, whatever `enforce` says; answers "Destroyed …" only once Vast.ai's instance list no longer has it, and an error saying the box still bills when it does. |
 | `vast_claim_endpoint` | `endpoint_id`, optionally `name`: says a serverless endpoint is the calling session's, so its workers show on it. A later claim by another session takes it over. Changes nothing on Vast.ai. |
 
 ### The hook: `hooks/`
@@ -767,10 +772,10 @@ prompt, or your skill.
 |---|---|
 | `prifly-extension.json` | The manifest: id, name, `main`, `prompt`, the menu item |
 | `index.ts` | The display: polls Vast.ai, shows boxes on sessions |
-| `leases.ts`, `spend.ts`, `rules.ts`, `enforce.ts` | Leases and budgets: the store, what a box has cost, the rules, carrying them out |
+| `leases.ts`, `spend.ts`, `rules.ts`, `enforce.ts`, `take-down.ts`, `lease-notices.ts` | Leases and budgets: the store, what a box has cost, the rules, carrying them out |
 | `credit.ts` | The account's credit against what is committed on it: the limit on the money cards, the runway |
 | `guard.sh` | The on-box guard that destroys a box whose lease is over while prifly is closed |
-| `tools.ts`, `rent.ts`, `tool-kit.ts` | The MCP tools sessions rent, extend, cancel and inspect boxes with |
+| `tools.ts`, `rent.ts`, `cancel.ts`, `tool-kit.ts` | The MCP tools sessions rent, extend, cancel and inspect boxes with |
 | `offers.ts` | The public marketplace search and one offer's price, over `GET /api/v0/bundles/` |
 | `hooks/hooks.json`, `hooks/vast-guard.ts` | The plugin's `PreToolUse` hook that refuses the CLI's writes |
 | `run.ts` | Running commands on a box over ssh: through prifly's vault (`vast-ssh`) where it can, else with `sshKey` |

@@ -251,10 +251,61 @@ export function authorized(key: string, method: string, json?: unknown): Request
   };
 }
 
-/** Destroy a box: it stops billing and its disk is deleted. The call `guard.sh` makes. */
-export async function destroyInstance(key: string, id: number, get: Fetch = fetch): Promise<void> {
-  const response = await get(`${SERVER}/api/v0/instances/${id}/`, authorized(key, "DELETE"));
-  if (!response.ok) throw await failure(`destroy of #${id}`, response);
+/** Destroy tries this many times when Vast.ai answers 429 or a 5xx, waiting longer each time. */
+const DESTROY_ATTEMPTS = 4;
+const DESTROY_BACKOFF_MS = 2_000;
+/** A `Retry-After` longer than this is not waited for: the next round tries again. */
+const MAX_RETRY_WAIT_MS = 30_000;
+
+/** Whether Vast.ai's answer is worth asking again: too many requests, or its own failure. */
+const transient = (status: number) => status === 429 || status >= 500;
+
+/** How long to wait before the next try: `Retry-After` (seconds) when Vast.ai sent one, else doubling from 2 s. */
+function retryWait(response: Response, attempt: number): number {
+  const seconds = Number(response.headers.get("Retry-After"));
+  const asked = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  return Math.min(asked ?? DESTROY_BACKOFF_MS * 2 ** attempt, MAX_RETRY_WAIT_MS);
+}
+
+/**
+ * Destroy a box: it stops billing and its disk is deleted. The call `guard.sh`
+ * makes. An answer of 429 ("API requests too frequent") or a 5xx is asked
+ * again a few times; a 2xx whose body says `success: false` is a failure too.
+ * That the box is really gone is for the instance list to say (`isListed`).
+ */
+export async function destroyInstance(
+  key: string,
+  id: number,
+  get: Fetch = fetch,
+  sleep: (ms: number) => Promise<unknown> = Bun.sleep,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await get(`${SERVER}/api/v0/instances/${id}/`, authorized(key, "DELETE"));
+    if (response.ok) {
+      const body = z
+        .object({ success: z.boolean().optional(), msg: z.string().optional() })
+        .safeParse(await response.json().catch(() => null));
+      if (body.success && body.data.success === false) {
+        throw new Error(
+          `Vast.ai destroy of #${id} failed: ${(body.data.msg ?? "it answered success false").slice(0, 200)}`,
+        );
+      }
+      return;
+    }
+    if (!transient(response.status) || attempt + 1 >= DESTROY_ATTEMPTS) {
+      throw await failure(`destroy of #${id}`, response);
+    }
+    await sleep(retryWait(response, attempt));
+  }
+}
+
+/** Whether Vast.ai's own instance list, read afresh, still has the box. */
+export async function isListed(
+  keys: readonly string[],
+  id: number,
+  get: Fetch = fetch,
+): Promise<boolean> {
+  return (await listInstances(keys, get)).some((box) => box.id === id);
 }
 
 /** What the CLI's `create instance --ssh --direct --cancel-unavail` sends for one offer. */
