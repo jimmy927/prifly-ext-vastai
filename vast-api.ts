@@ -48,6 +48,8 @@ export const InstanceSchema = z.object({
   /** The host machine: a broken box's machine is not rented again. */
   machine_id: field(z.number()),
   gpu_name: field(text),
+  /** The Docker image the box was rented with, e.g. `ollama/ollama` (with `:tag` when one was given). */
+  image_uuid: field(text.nullable()),
   num_gpus: field(z.number()),
   /** The box's disk, in GB: what a stopped box keeps, and bills. */
   disk_space: field(z.number()),

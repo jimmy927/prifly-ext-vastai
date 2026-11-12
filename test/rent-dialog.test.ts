@@ -165,3 +165,23 @@ describe("names and budgets", () => {
     expect(suggestedBudget(0.333, 1)).toBe(0.42);
   });
 });
+
+describe("the ollama capability", () => {
+  const names = (more: Record<string, unknown>) =>
+    machineOf(
+      box({ gpu_name: "RTX 4090", num_gpus: 1, ...more }),
+      CONFIG,
+      undefined,
+    ).capabilities?.map((c) => `${c.name}:${c.state}`);
+
+  test("a box rented with ollama lists ollama present next to gpu", () => {
+    expect(names({ image_uuid: "ollama/ollama" })).toEqual(["gpu:present", "ollama:present"]);
+    expect(names({ image_uuid: "ollama/ollama:0.5.1" })).toContain("ollama:present");
+  });
+
+  test("an ordinary box does not", () => {
+    expect(names({ image_uuid: "ubuntu:22.04" })).toEqual(["gpu:present"]);
+    expect(names({ image_uuid: "someone/ollama/ollama-fork" })).toEqual(["gpu:present"]);
+    expect(names({})).toEqual(["gpu:present"]);
+  });
+});

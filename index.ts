@@ -52,6 +52,7 @@ import {
 } from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
+import { OLLAMA_IMAGE } from "./rent";
 import { rentHandler } from "./rent-dialog";
 import { span } from "./rules";
 import { addressOf, sshKeyPath, sshKeyProblem, sshRoutes, sshTarget } from "./run";
@@ -524,11 +525,29 @@ export function machineOf(
     // (`ownerSession`, `trust`) is separate and stays empty / ask-first for a box without a session.
     ...(fromDialog && running ? { setup: "claude-code" as const } : {}),
     notes: running ? "" : "not running — a stopped box still bills disk",
-    capabilities:
-      gpu === ""
+    capabilities: [
+      ...(gpu === ""
         ? []
-        : [{ name: "gpu", state: "present", version: gpu, detail: `${box.num_gpus ?? 1}x` }],
+        : [
+            {
+              name: "gpu",
+              state: "present",
+              version: gpu,
+              detail: `${box.num_gpus ?? 1}x`,
+            } as const,
+          ]),
+      ...(servesOllama(box) ? [{ name: "ollama", state: "present" } as const] : []),
+    ],
   };
+}
+
+/**
+ * Whether the box was rented with the ollama option: that rents `OLLAMA_IMAGE`, and
+ * Vast.ai keeps the image on the instance, so this survives a host restart.
+ */
+export function servesOllama(box: Instance): boolean {
+  const image = (box.image_uuid ?? "").toLowerCase().replace(/^docker\.io\//, "");
+  return image === OLLAMA_IMAGE || image.startsWith(`${OLLAMA_IMAGE}:`);
 }
 
 function memory(box: Instance): string {
