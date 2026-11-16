@@ -30,6 +30,32 @@ export function familyOf(
   );
 }
 
+/**
+ * The rents in progress per set of tools: a card open or a create in flight.
+ * Keyed by the deps object, which the tool and the New session dialog share.
+ */
+const PENDING = new WeakMap<ToolDeps, Set<Pending>>();
+
+/**
+ * Hold `name` for `session` while it rents, unless a family member already
+ * holds or is renting a box of that name: then the refusal. The hold is
+ * released by calling what this returns. Synchronous, so two rents cannot
+ * both pass the check.
+ */
+export function holdName(
+  deps: ToolDeps,
+  boxes: readonly Instance[],
+  wanted: { session: string; name: string; owner: string },
+): string | (() => void) {
+  const pending = PENDING.get(deps) ?? new Set<Pending>();
+  PENDING.set(deps, pending);
+  const refused = familyRefusal(deps, pending, boxes, wanted);
+  if (refused !== null) return refused;
+  const mine = { session: wanted.session, name: wanted.name.toLowerCase() };
+  pending.add(mine);
+  return () => pending.delete(mine);
+}
+
 /** The refusal when a family member already holds or is renting a box of this name, else null. */
 export function familyRefusal(
   deps: ToolDeps,

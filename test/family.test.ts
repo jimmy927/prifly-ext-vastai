@@ -30,6 +30,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "the same job",
+  need: "cpu",
+  need_note: "a few threads, no GPU",
 };
 
 /** A session's context whose card waits for `release`, and answers the first row at $20. */
@@ -49,7 +51,7 @@ function ctxOf(id: string, wait?: Promise<void>) {
 
 async function world(sessions: ExtensionSession[] = SESSIONS) {
   const fake = vast([offer(101, 0.5)]);
-  const { tool, store, folder } = await setup(fake, [], fileStore, () => sessions);
+  const { tool, store, folder } = await setup(fake, [], fileStore, { sessions: () => sessions });
   return { fake, rent: tool("vast_rent"), store, folder };
 }
 

@@ -83,6 +83,48 @@ function sshLine(box, ui) {
   return `<div class="ssh"><code title="${cmd}">${cmd}</code><button type="button" class="plain small" data-copy="${cmd}">Copy</button>${ui.shell ? `<button type="button" class="plain small primary" data-shell="${esc(box.key)}">Open shell</button>` : ""}</div>`;
 }
 
+/** Select all of `code`'s text, so Ctrl+C copies it where the clipboard cannot be written. */
+export function selectText(code) {
+  const range = document.createRange();
+  range.selectNodeContents(code);
+  const selection = getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+/**
+ * Copy a card's ssh command. The panel can sit in a cross-origin frame where
+ * the async clipboard refuses (or is missing): then the command is selected and
+ * copied with execCommand("copy"), which a frame without clipboard-write still
+ * allows from a click. Only when both routes fail does the button say "Copy
+ * failed", with the command left selected so Ctrl+C still works.
+ */
+export async function copyCommand(
+  button,
+  text,
+  { clipboard, select = selectText, exec = document.execCommand.bind(document) },
+) {
+  let copied = false;
+  try {
+    await clipboard.writeText(text);
+    copied = true;
+  } catch {
+    // Falls back to the selection and execCommand below.
+  }
+  if (!copied) {
+    const code = button.closest(".ssh")?.querySelector("code");
+    if (code) select(code);
+    try {
+      copied = exec("copy") === true;
+    } catch {
+      // Both routes failed: reported on the button, the text stays selected.
+    }
+  }
+  button.textContent = copied ? "Copied" : "Copy failed";
+  setTimeout(() => (button.textContent = "Copy"), copied ? 1500 : 2500);
+  return copied;
+}
+
 /** Extend, while the lease rules act on it; Destroy, asked again on the card itself. */
 function buttons(box, ui) {
   const key = esc(box.key);

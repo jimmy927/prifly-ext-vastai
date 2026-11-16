@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { type Lease, readLeases, updateLeases } from "../leases";
 import { fileStore } from "../store";
-import { ctxFor, H, LABEL, NOW, setup, vast } from "./fake-vast";
+import { ctxFor, H, LABEL, NOW, type SetupOptions, setup, vast } from "./fake-vast";
 
 /**
  * This session's box: 2 an hour, started an hour ago, with a lease to an hour
  * from now; its host's end date `hostEndsIn` ms from now, when given.
  */
-async function withBox(budget: number | null, hostEndsIn?: number) {
+async function withBox(budget: number | null, hostEndsIn?: number, options?: SetupOptions) {
   const fake = vast([]);
   fake.instances.push(
     {
@@ -24,7 +24,7 @@ async function withBox(budget: number | null, hostEndsIn?: number) {
     { id: 9, label: "anna/s-0123abcd/theirs", dph_total: 1, start_date: NOW / 1000 },
     { id: 10, label: null },
   );
-  const ctx = await setup(fake);
+  const ctx = await setup(fake, [], undefined, options);
   const lease: Lease = {
     label: LABEL,
     box: 7,
@@ -54,6 +54,15 @@ describe("vast_boxes", () => {
     expect(text).toContain("-p 20001 root@ssh1.vast.ai");
     expect(text).not.toContain("other");
     expect(text).not.toContain("theirs");
+  });
+
+  test("with lease enforcement off it says nothing is destroyed by itself", async () => {
+    const off = await withBox(10, undefined, { enforce: false });
+    expect(await off.tool("vast_boxes").call({}, ctxFor([]).ctx)).toContain(
+      "Lease enforcement is off",
+    );
+    const on = await withBox(10);
+    expect(await on.tool("vast_boxes").call({}, ctxFor([]).ctx)).not.toContain("enforcement");
   });
 
   test("shows the host's end date and the time left, when the box has one", async () => {
@@ -197,17 +206,86 @@ describe("vast_extend", () => {
 });
 
 describe("vast_cancel", () => {
-  test("cancels this session's lease: the enforcer destroys the box", async () => {
-    const { tool, folder } = await withBox(10);
+  const listed = (fake: ReturnType<typeof vast>) => fake.instances.map((box) => box["id"]);
+
+  test("destroys the box and says so once Vast.ai's list no longer has it", async () => {
+    const { fake, tool, folder } = await withBox(10);
     const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toBe("Destroyed job1 (#7); it no longer bills.");
+    expect(fake.destroy.deletes).toEqual([7]);
+    expect(listed(fake)).not.toContain(7);
+    expect(await only(folder)).toBeUndefined();
+  });
+
+  test("destroys the box with lease enforcement off too: a cancel is the reader's order", async () => {
+    const { fake, tool } = await withBox(10, undefined, { enforce: false });
+    const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toContain("Destroyed job1 (#7); it no longer bills.");
+    expect(fake.destroy.deletes).toEqual([7]);
+    expect(listed(fake)).not.toContain(7);
+  });
+
+  test("a destroy answered 429 once is asked again and succeeds", async () => {
+    const { fake, tool } = await withBox(10);
+    fake.destroy.answers = [429];
+    const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toContain("Destroyed job1 (#7)");
+    expect(fake.destroy.deletes).toEqual([7, 7]);
+    expect(listed(fake)).not.toContain(7);
+  });
+
+  test("a destroy answered 429 every time is a failure that says the box still bills, and a second cancel retries", async () => {
+    const { fake, tool, folder } = await withBox(10);
+    fake.destroy.answers = [429, 429, 429, 429];
+    const failure = await tool("vast_cancel")
+      .call({ name: "job1" }, ctxFor([]).ctx)
+      .catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("still running and billing");
+    expect((failure as Error).message).toContain("Vast.ai destroy of #7 failed (429)");
+    expect(listed(fake)).toContain(7);
     expect((await only(folder))?.cancelled).toBe(true);
-    expect(text).toContain("saved and destroyed within a minute");
+    // The failed take-down is not stuck: the next cancel runs it again.
+    const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toContain("Destroyed job1 (#7)");
+    expect(listed(fake)).not.toContain(7);
+  });
+
+  test("a DELETE answered 200 that leaves the box listed is not reported as destroyed", async () => {
+    const { fake, tool } = await withBox(10);
+    fake.destroy.keep = true;
+    const failure = await tool("vast_cancel")
+      .call({ name: "job1" }, ctxFor([]).ctx)
+      .catch((e: Error) => e);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("still running and billing");
+    expect((failure as Error).message).toContain("still on its instance list");
+    expect(listed(fake)).toContain(7);
+  });
+
+  test("a save that is still running is said so, not called a destroy", async () => {
+    const { fake, tool } = await withBox(10, undefined, {
+      cancelWaitMs: 1,
+      enforceDeps: { onBox: () => new Promise(() => undefined) },
+    });
+    const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toContain("not destroyed yet");
+    expect(text).not.toContain("Destroyed");
+    expect(fake.destroy.deletes).toEqual([]);
+  });
+
+  test("a box already gone from Vast.ai is said to be gone", async () => {
+    const { fake, tool } = await withBox(10);
+    fake.instances.splice(0, 1);
+    const text = await tool("vast_cancel").call({ name: "job1" }, ctxFor([]).ctx);
+    expect(text).toBe("job1 (#7) is no longer on Vast.ai; nothing bills for it.");
+    expect(fake.destroy.deletes).toEqual([]);
   });
 
   test("by Vast.ai id, and not for another session's box", async () => {
-    const { tool, folder } = await withBox(10);
+    const { fake, tool } = await withBox(10);
     await tool("vast_cancel").call({ name: "7" }, ctxFor([]).ctx);
-    expect((await only(folder))?.cancelled).toBe(true);
+    expect(fake.destroy.deletes).toEqual([7]);
     await expect(tool("vast_cancel").call({ name: "other" }, ctxFor([]).ctx)).rejects.toThrow(
       "no lease for other",
     );

@@ -3,7 +3,7 @@ import { boxCards, stateOf } from "../fleet";
 import { show } from "../index";
 import { GpuHold } from "../load";
 import type { Decoration, ExtensionSession } from "../prifly-api";
-import type { Instance } from "../vast-api";
+import { type Instance, parsePage } from "../vast-api";
 
 const NOW = Date.parse("2026-10-06T11:22:00Z");
 const SESSIONS: ExtensionSession[] = [
@@ -69,6 +69,43 @@ describe("the cards", () => {
     expect(cards[0]?.owner).toEqual({ kind: "foreign", name: "anna" });
     expect(cards[1]?.owner).toEqual({ kind: "none", name: null });
     expect(cards[3]?.diskGb).toBe(40);
+  });
+});
+
+describe("a card's ssh command", () => {
+  const sshOf = (fields: Partial<Instance>) =>
+    boxCards(
+      [box({ id: 1, actual_status: "running", intended_status: "running", ...fields })],
+      deps,
+    )[0]?.ssh;
+
+  test("the complete case is the full command", () => {
+    const key = { ...deps, sshKey: "~/.ssh/vast_captcha_ed25519" };
+    const [card] = boxCards(
+      [box({ id: 1, actual_status: "running", ssh_host: "ssh5.vast.ai", ssh_port: 20722 })],
+      key,
+    );
+    expect(card?.ssh).toBe(
+      "ssh -i ~/.ssh/vast_captcha_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -p 20722 root@ssh5.vast.ai",
+    );
+  });
+
+  test("no host or port, or an unusable one, is no command at all", () => {
+    expect(sshOf({})).toBeNull();
+    expect(sshOf({ ssh_host: "h" })).toBeNull();
+    expect(sshOf({ ssh_port: 22 })).toBeNull();
+    const [parsed] = parsePage({
+      instances: [{ id: 1, actual_status: "running", ssh_host: null, ssh_port: null }],
+    }).rows;
+    expect(sshOf(parsed ?? {})).toBeNull();
+    expect(sshOf({ ssh_host: "", ssh_port: 22 })).toBeNull();
+    expect(sshOf({ ssh_host: "h", ssh_port: 0 })).toBeNull();
+    expect(sshOf({ ssh_host: "h", ssh_port: 70_000 })).toBeNull();
+    expect(sshOf({ ssh_host: "h", ssh_port: 22.5 })).toBeNull();
+  });
+
+  test("a box still loading has none, even with an address", () => {
+    expect(sshOf({ actual_status: "loading", ssh_host: "h", ssh_port: 22 })).toBeNull();
   });
 });
 

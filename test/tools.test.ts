@@ -18,6 +18,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "fine-tune a 4B model for about 3 hours",
+  need: "gpu" as const,
+  need_note: "one GPU for the job",
 };
 
 describe("vast_offers", () => {
@@ -57,6 +59,72 @@ describe("vast_offers", () => {
     expect(lines[0]).toContain("ends in 3 d 4 h");
     expect(lines[1]).toContain("no end date");
     expect(await tool("vast_offers").call({}, ctxFor([]).ctx)).toContain("ends in 9 h");
+  });
+
+  describe("CUDA", () => {
+    const hosts = () => [
+      offer(1, 0.1, { cuda_max_good: 12.2, driver_version: "535.309.01" }),
+      offer(2, 0.2, { cuda_max_good: 12.9, driver_version: "575.57.08" }),
+      offer(3, 0.3),
+    ];
+    const linesOf = (text: string) => text.split("\n").filter((l) => l.startsWith("offer "));
+
+    test("min_cuda keeps only hosts at or above it, and sends it to Vast's search", async () => {
+      const fake = vast(hosts());
+      const urls: string[] = [];
+      const { tool } = await setup({
+        ...fake,
+        get: async (url, init) => {
+          urls.push(url);
+          return fake.get(url, init);
+        },
+      });
+      const text = await tool("vast_offers").call({ min_cuda: 12.9 }, ctxFor([]).ctx);
+      expect(linesOf(text).map((l) => l.split(":")[0])).toEqual(["offer 2"]);
+      const searches = urls.filter((u) => u.includes("/api/v0/bundles/"));
+      expect(searches.length).toBeGreaterThan(0);
+      for (const url of searches) {
+        const q = JSON.parse(new URL(url).searchParams.get("q") ?? "{}");
+        expect(q.cuda_max_good).toEqual({ gte: 12.9 });
+      }
+    });
+
+    test("without min_cuda every host is listed, each with its CUDA and driver or nothing, and no cuda filter is sent", async () => {
+      const fake = vast(hosts());
+      const urls: string[] = [];
+      const { tool } = await setup({
+        ...fake,
+        get: async (url, init) => {
+          urls.push(url);
+          return fake.get(url, init);
+        },
+      });
+      const lines = linesOf(await tool("vast_offers").call({}, ctxFor([]).ctx));
+      expect(lines.map((l) => l.split(":")[0])).toEqual(["offer 1", "offer 2", "offer 3"]);
+      expect(lines[0]).toContain("CUDA 12.2 · drv 535.309");
+      expect(lines[1]).toContain("CUDA 12.9 · drv 575.57");
+      expect(lines[2]).not.toContain("CUDA");
+      expect(lines[2]).not.toContain("drv");
+      for (const url of urls.filter((u) => u.includes("/api/v0/bundles/"))) {
+        expect(JSON.parse(new URL(url).searchParams.get("q") ?? "{}")).not.toHaveProperty(
+          "cuda_max_good",
+        );
+      }
+    });
+
+    test("an offer with only one of the two shows just that one", async () => {
+      const { tool } = await setup(
+        vast([
+          offer(1, 0.1, { cuda_max_good: 12.4 }),
+          offer(2, 0.2, { driver_version: "550.54.14" }),
+        ]),
+      );
+      const lines = linesOf(await tool("vast_offers").call({}, ctxFor([]).ctx));
+      expect(lines[0]).toContain("CUDA 12.4 ·");
+      expect(lines[0]).not.toContain("drv");
+      expect(lines[1]).toContain("drv 550.54 ·");
+      expect(lines[1]).not.toContain("CUDA");
+    });
   });
 
   test("says so when nothing passes", async () => {
@@ -103,6 +171,18 @@ describe("vast_rent", () => {
       hint: "Suggested by Claude: fine-tune a 4B model for about 3 hours. The box is saved and destroyed when it has cost this much. Vast credit $10000.00 − committed $0.00 − margin $909.00 → covers a budget up to $9090.",
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
     });
+  });
+
+  test("with lease enforcement off, neither the card nor the answer promises a destroy", async () => {
+    const fake = vast([offer(101, 0.5)]);
+    const { tool } = await setup(fake, [], undefined, { enforce: false });
+    const { ctx, cards } = ctxFor([{ row: 0, amount: 20 }]);
+    const text = await tool("vast_rent").call({ ...RENT, offers: [101] }, ctx);
+    expect(text).toContain("Rented job1");
+    expect(text).toContain("Lease enforcement is off");
+    expect(text).not.toContain("saved and destroyed");
+    expect(cards[0]?.amount?.hint).toContain("Lease enforcement is off");
+    expect(cards[0]?.amount?.hint).not.toContain("saved and destroyed");
   });
 
   test("offers that are gone, or cannot run an hour within the budget, are left off", async () => {
@@ -212,12 +292,22 @@ describe("withSshRepair", () => {
     }
   });
 
+  test("the no-auto-tmux file is touched before the caller's onstart, with no pkill", () => {
+    expect(SSH_KEY_REPAIR).toContain("touch /root/.no_auto_tmux");
+    expect(SSH_KEY_REPAIR).not.toMatch(/pkill|HUP/);
+    const out = withSshRepair("echo hi");
+    expect(out.indexOf("touch /root/.no_auto_tmux")).toBeLessThan(out.indexOf("echo hi"));
+  });
+
   const bash = Bun.which("bash");
-  // The repair uses absolute paths, so the script under test is pointed into a tmp dir.
-  const inside = (home: string) =>
-    withSshRepair("echo tail-ran")
+  // The repair uses absolute paths, so the script under test is pointed into a tmp dir
+  // (with forward slashes: bash reads a Windows path's backslashes as escapes).
+  const inside = (dir: string) => {
+    const home = dir.replaceAll("\\", "/");
+    return withSshRepair("echo tail-ran")
       .replaceAll("/etc/ssh/", `${home}/etc/ssh/`)
       .replaceAll("/root", `${home}/root`);
+  };
   const run = async (script: string) => {
     const proc = Bun.spawn([bash as string, "-e", "-c", script], {
       stdout: "pipe",
@@ -241,6 +331,31 @@ describe("withSshRepair", () => {
       }
     },
   );
+
+  test.skipIf(!bash)("a failing no-auto-tmux touch cannot stop the caller's onstart", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      // /root does not exist here, so the touch fails first, under bash -e.
+      const ran = await run(inside(home));
+      expect(ran.code).toBe(0);
+      expect(ran.out).toContain("tail-ran");
+      expect(await Bun.file(join(home, "root/.no_auto_tmux")).exists()).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!bash)("the touch creates the file when /root exists", async () => {
+    const home = await mkdtemp(join(tmpdir(), "onstart-"));
+    try {
+      await mkdir(join(home, "root"), { recursive: true });
+      const ran = await run(inside(home));
+      expect(ran.out).toContain("tail-ran");
+      expect(await Bun.file(join(home, "root/.no_auto_tmux")).exists()).toBe(true);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 
   // POSIX file modes: Windows has none to check, and the repair runs only on the Linux box.
   const posix = bash !== null && process.platform !== "win32";

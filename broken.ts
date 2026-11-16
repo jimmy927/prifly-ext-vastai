@@ -23,7 +23,7 @@ import { cancel, type Lease, type LeaseTarget, type Replace, updateLeases } from
 import type { DecorationTone, ExtensionApi } from "./prifly-api";
 import { MAX_REPLACEMENTS, type ReplaceDeps, rentNext } from "./replace";
 import { parseLabel, span, type Verdict } from "./rules";
-import type { onBox } from "./run";
+import type { onBox, Ran } from "./run";
 import { sshTarget } from "./run";
 import { budgetText, dollars, spentOf } from "./spend";
 import type { Store } from "./store";
@@ -40,6 +40,20 @@ const PROBE_MS = 25_000;
 export const LOG_TAIL = 400;
 /** What sshd logs when it refuses authorized_keys for its modes. */
 const BAD_MODES = /bad ownership or modes/i;
+
+/** What Vast's auto-tmux prints, after the login worked, when it refuses a command without a terminal. */
+const TMUX_REFUSED = /open terminal failed|duplicate session/i;
+
+/**
+ * Whether the probe's `true` got into the box: it ran (code 0), or the login
+ * succeeded and Vast's auto-tmux refused the command (VAI-49). Exit 255 and
+ * -1 (connect or auth failure, refusal, no route) never count, whatever
+ * stderr says.
+ */
+export function loggedIn(ran: Ran): boolean {
+  if (ran.code === 0) return true;
+  return ran.code !== 255 && ran.code !== -1 && TMUX_REFUSED.test(ran.err);
+}
 
 /** What the watch reaches outside itself, replaceable so a test rents and probes nothing real. */
 export type BrokenDeps = {
@@ -156,7 +170,7 @@ export class BrokenWatch {
     const { deps, onBox, sshKey } = this.#host;
     const id = box.id ?? 0;
     const probe =
-      deps.probe ?? (async (to, key) => (await onBox(to, key, "true", PROBE_MS)).code === 0);
+      deps.probe ?? (async (to, key) => loggedIn(await onBox(to, key, "true", PROBE_MS)));
     if (await probe(target, sshKey)) {
       this.#reached.add(id);
       this.#sshDownSince.delete(id);

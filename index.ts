@@ -21,14 +21,15 @@
  *
  * A session's box holds a lease (`leases.ts`, booked by the `vast_rent` tool),
  * and `enforce.ts` destroys the box when it has none, it ran out, or it has
- * cost its budget; with `"enforce": false`, the default, it only says what it
- * would do. Sessions rent, extend, cancel and inspect boxes only through the
+ * cost its budget; with `"enforce": false` in config.json (enforcement is on
+ * unless it says so) it only says what it would do. `vast_cancel` destroys
+ * either way. Sessions rent, extend, cancel and inspect boxes only through the
  * tools this serves (`tools.ts`), and the plugin's hook refuses the CLI.
  *
  * Everything goes over Vast.ai's REST API (`vast-api.ts`), with the API key
  * where the CLI keeps it (`~/.config/vastai/vast_api_key`). Config (optional),
  * in this folder's `config.json`:
- *   { "refreshSeconds": 60, "enforce": true, "owner": "jimmy", "sshKey": "~/.ssh/vast_ed25519" }
+ *   { "refreshSeconds": 60, "enforce": false, "owner": "jimmy", "sshKey": "~/.ssh/vast_ed25519" }
  */
 
 import { homedir } from "node:os";
@@ -51,11 +52,13 @@ import {
 } from "./machine-card";
 import { readOwner } from "./owner";
 import type { Decoration, ExtensionApi, ExtensionMachine, PanelRequest } from "./prifly-api";
+import { OLLAMA_IMAGE } from "./rent";
+import { rentHandler } from "./rent-dialog";
 import { span } from "./rules";
-import { sshCommand, sshKeyPath, sshKeyProblem, sshTarget } from "./run";
+import { addressOf, sshKeyPath, sshKeyProblem, sshRoutes, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { type Store, storeFor } from "./store";
-import type { ToolDeps } from "./tool-kit";
+import { hasRentFromDialog, hostDeps, type ToolDeps } from "./tool-kit";
 import { makeTools } from "./tools";
 import {
   destroyInstance,
@@ -72,7 +75,7 @@ import {
  * this machine; a missing file is logged (`ssh_key_missing`), not fatal. On a
  * prifly with "vault-ssh", the save, guard and probe use the vault's
  * `vast-ssh` entry instead, and this key only when the vault refuses (`run.ts`
- * `boxRunner`). `enforce`: destroy what breaks a lease.
+ * `boxRunner`). `enforce`: destroy what breaks a lease; on unless config.json says `false`.
  * `credit`: the margin kept free of the account's credit, and the runway warnings.
  */
 type Config = {
@@ -82,6 +85,9 @@ type Config = {
   owner: string;
   credit: CreditConfig;
 };
+
+/** What the tools read of the config: the ssh key, the credit margin, and whether leases are enforced. */
+const toolConfig = ({ sshKey, credit, enforce }: Config) => ({ sshKey, credit, enforce });
 
 /** What the panel reads, while the extension runs. */
 let panelDeps: PanelDeps | null = null;
@@ -102,32 +108,6 @@ export function terminal(
   key: string,
 ): { title: string; command: string[] } | null {
   return panelDeps?.terminal(key) ?? null;
-}
-
-/** What the tools run on: this prifly's folder, features and sessions, and the extension's own state. */
-function toolDeps(
-  api: ExtensionApi,
-  own: {
-    store: Store;
-    config: Config;
-    keys: ToolDeps["keys"];
-    refresh: () => Promise<void>;
-  },
-): ToolDeps {
-  return {
-    store: own.store,
-    owner: () => readOwner(api.folder, process.env),
-    sshKey: own.config.sshKey,
-    keys: own.keys,
-    get: fetch,
-    now: Date.now,
-    sleep: Bun.sleep,
-    refresh: () => void own.refresh(),
-    log: (event, fields) => api.log(event, fields),
-    features: api.features ?? [],
-    sessions: () => api.sessions(),
-    credit: own.config.credit,
-  };
 }
 
 export async function activate(rawApi: ExtensionApi): Promise<() => void> {
@@ -223,7 +203,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
         show(api, boxes, judged, config, gpuHold, now, claims);
         // Absent on a prifly older than "machines": the boxes still show.
         const waiting = leases.filter((l) => l.box === null);
-        api.machines?.report(machinesOf(boxes, config, judged, waiting, credit));
+        api.machines?.report(machinesOf(boxes, config, judged, waiting, credit, api.features));
       }
     } catch (caught) {
       // No API key, a refused one, or offline: said in the log, and tried
@@ -236,7 +216,20 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     }
   };
   // Absent on a prifly older than "extension tools": the boxes still show.
-  api.tools?.register(makeTools(toolDeps(api, { store, config, keys, refresh })));
+  const toolDeps: ToolDeps = {
+    store,
+    ...hostDeps(api),
+    ...toolConfig(config),
+    keys,
+    get: fetch,
+    now: Date.now,
+    sleep: Bun.sleep,
+    refresh: () => void refresh(),
+    takeDown: (box) => enforcer.cancelNow(box),
+  };
+  api.tools?.register(makeTools(toolDeps));
+  // The New session dialog's rent row, only on a prifly that has one.
+  if (hasRentFromDialog(api.features)) api.onRent?.(rentHandler(toolDeps));
   // A box's menu, on its chip or machine card, and the same buttons on its panel card.
   const act = async (key: string, action: string): Promise<string> => {
     const hours = EXTEND_HOURS[action];
@@ -278,12 +271,20 @@ function shellOf(
   config: Pick<Config, "owner" | "sshKey">,
 ): { title: string; command: string[] } | null {
   const box = boxes.find((b) => String(b.id) === key);
-  const target = box === undefined ? null : sshTarget(box);
-  if (box === undefined || target === null) return null;
-  return {
-    title: `${ownerOf(box, config.owner).name} — ssh root@${target.host}:${target.port}`,
-    command: sshCommand(target.host, target.port, config.sshKey),
-  };
+  return box === undefined ? null : terminalOf(box, ownerOf(box, config.owner).name, config.sshKey);
+}
+
+/** The terminal a click on a running box opens: its first route (the box's own address when it has one). */
+function terminalOf(
+  box: Instance,
+  name: string,
+  sshKey: string | null,
+): { title: string; command: string[] } | null {
+  const target = sshTarget(box);
+  const command = sshRoutes(box, sshKey)[0]?.exec;
+  if (target === null || command === undefined) return null;
+  const shown = target.direct ?? target;
+  return { title: `${name} — ssh root@${shown.host}:${shown.port}`, command };
 }
 
 /** The claimed serverless endpoints (`endpoints.ts`); on a failure, logged, the last ones read. */
@@ -314,14 +315,15 @@ async function logKeyProblem(api: Pick<ExtensionApi, "log">, sshKey: string | nu
   if (problem !== null) api.log("ssh_key_missing", { path: sshKey, message: problem });
 }
 
-async function readConfig(folder: string): Promise<Config> {
+/** `config.json` in `folder`, with the defaults for what it leaves out; enforcement is on unless it says `"enforce": false`. */
+export async function readConfig(folder: string): Promise<Config> {
   const raw = (await Bun.file(join(folder, "config.json"))
     .json()
     .catch(() => ({}))) as Partial<Config>;
   return {
     refreshSeconds: Math.max(15, raw.refreshSeconds ?? 60),
     sshKey: raw.sshKey == null ? null : sshKeyPath(raw.sshKey, homedir()),
-    enforce: raw.enforce === true,
+    enforce: raw.enforce !== false,
     owner: await readOwner(folder, process.env),
     credit: creditConfig(raw.credit),
   };
@@ -409,7 +411,7 @@ function decoration(
   const status = box.actual_status ?? box.intended_status ?? "?";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   const running = status === "running";
-  const target = sshTarget(box);
+  const terminal = terminalOf(box, name, config.sshKey);
   const load = cardLoad(box, hold, now);
   const loadTone = running ? load.tone : "critical";
   const leased = lease === undefined ? null : leaseLine(lease, config.enforce);
@@ -425,14 +427,7 @@ function decoration(
     ],
     actions: boxActions(box.id ?? "?", name, rate, lease),
     // A click on the box opens ssh to it in a terminal window of prifly's own.
-    ...(target === null
-      ? {}
-      : {
-          terminal: {
-            title: `${name} — ssh root@${target.host}:${target.port}`,
-            command: sshCommand(target.host, target.port, config.sshKey),
-          },
-        }),
+    ...(terminal === null ? {} : { terminal }),
   };
 }
 
@@ -450,11 +445,19 @@ function details(
     `${status} · ${rate}${running ? "" : " — a stopped box still bills disk"}`,
     running ? loadLine : "",
     running ? `Memory ${memory(box)}` : "",
-    box.ssh_host === undefined ? "" : `ssh -p ${box.ssh_port} root@${box.ssh_host}`,
+    sshLine(box),
     unclaimed
       ? "Unclaimed: rented by hand or by other software. Destroy it from its menu if it is not wanted."
       : "",
   ].filter((line) => line !== "");
+}
+
+/** The hover line for ssh: the box's own address when it has one, else the proxy; empty with no address. */
+function sshLine(box: Instance): string {
+  const target = addressOf(box);
+  if (target === null) return "";
+  const shown = target.direct ?? target;
+  return `ssh -p ${shown.port} root@${shown.host}${target.direct === undefined ? "" : " (direct)"}`;
 }
 
 /**
@@ -465,15 +468,18 @@ function details(
  * owner's, is ask-first for all, since nobody here knows its history. Renting costs money, so the
  * provider is ask-first.
  */
-function machinesOf(
+export function machinesOf(
   boxes: readonly Instance[],
   config: Config,
   judged: ReadonlyMap<number, Judged>,
   waiting: readonly Lease[],
   credit: CreditView | null,
+  /** `api.features`: with "rent-from-dialog" boxes offer `setup`, the provider a `rent` row. */
+  features?: readonly string[],
 ): ExtensionMachine[] {
+  const fromDialog = hasRentFromDialog(features);
   const items = boxes.map((box) =>
-    machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id)),
+    machineOf(box, config, box.id === undefined ? undefined : judged.get(box.id), fromDialog),
   );
   const provider: ExtensionMachine = {
     key: "provider",
@@ -481,6 +487,7 @@ function machinesOf(
     label: "Vast.ai",
     trust: "ask-first",
     ...providerCard(waiting, credit),
+    ...(fromDialog ? { rent: { needs: ["cpu", "gpu"] as const } } : {}),
     notes:
       "Rents Linux GPU or CPU boxes by the hour, only through the vast_offers and vast_rent tools: the reader confirms the budget of each rental. Read the vastai skill first.",
     capabilities: [
@@ -491,14 +498,15 @@ function machinesOf(
   return [...items, provider];
 }
 
-function machineOf(
+export function machineOf(
   box: Instance,
   { sshKey, owner, enforce }: Config,
   lease: Judged | undefined,
+  fromDialog = false,
 ): ExtensionMachine {
   const { session, name } = ownerOf(box, owner);
   const running = (box.actual_status ?? box.intended_status) === "running";
-  const target = sshTarget(box);
+  const routes = sshRoutes(box, sshKey);
   const gpu = box.gpu_name ?? "";
   const rate = `$${(box.dph_total ?? 0).toFixed(2)}/h`;
   return {
@@ -507,15 +515,37 @@ function machineOf(
     status: statusOf(lease, session, owner, enforce),
     actions: boxActions(box.id ?? "?", name, rate, lease),
     os: "linux",
-    exec: target === null ? [] : sshCommand(target.host, target.port, sshKey),
+    exec: routes[0]?.exec ?? [],
+    routes,
     trust: session === null ? "ask-first" : "use-freely",
     ownerSession: session ?? "",
+    // prifly may install Claude Code on any box that is up, whoever rented it; ownership
+    // (`ownerSession`, `trust`) is separate and stays empty / ask-first for a box without a session.
+    ...(fromDialog && running ? { setup: "claude-code" as const } : {}),
     notes: running ? "" : "not running — a stopped box still bills disk",
-    capabilities:
-      gpu === ""
+    capabilities: [
+      ...(gpu === ""
         ? []
-        : [{ name: "gpu", state: "present", version: gpu, detail: `${box.num_gpus ?? 1}x` }],
+        : [
+            {
+              name: "gpu",
+              state: "present",
+              version: gpu,
+              detail: `${box.num_gpus ?? 1}x`,
+            } as const,
+          ]),
+      ...(servesOllama(box) ? [{ name: "ollama", state: "present" } as const] : []),
+    ],
   };
+}
+
+/**
+ * Whether the box was rented with the ollama option: that rents `OLLAMA_IMAGE`, and
+ * Vast.ai keeps the image on the instance, so this survives a host restart.
+ */
+export function servesOllama(box: Instance): boolean {
+  const image = (box.image_uuid ?? "").toLowerCase().replace(/^docker\.io\//, "");
+  return image === OLLAMA_IMAGE || image.startsWith(`${OLLAMA_IMAGE}:`);
 }
 
 function memory(box: Instance): string {

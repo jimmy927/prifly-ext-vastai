@@ -10,13 +10,13 @@
  */
 
 import { z } from "zod";
+import { cancelTool } from "./cancel";
 import { cpuScores } from "./cpu-score";
 import { available, RAISE_ACK, runwayHours } from "./credit";
 import { claimEndpoint, workerOf } from "./endpoints";
+import { hostCapOf, reachOf } from "./extend";
 import {
-  cancel,
   extend,
-  find,
   type Lease,
   type LeaseTarget,
   leaseOf,
@@ -25,6 +25,7 @@ import {
   updateLeases,
 } from "./leases";
 import {
+  cudaText,
   endsInText,
   type OfferFilters,
   perfCells,
@@ -36,9 +37,8 @@ import type { ExtensionTool, ExtensionToolContext } from "./prifly-api";
 import { rentTool } from "./rent";
 import { MAX_REPLACEMENTS } from "./replace";
 import { EXPIRY_MARGIN_MS, hostEnd, span } from "./rules";
-import { budgetEnd, budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
+import { budgetText, costAt, dollars, spentLine, spentOf } from "./spend";
 import {
-  boxLabels,
   confirmOver,
   creditGuard,
   creditNow,
@@ -47,7 +47,6 @@ import {
   guardedAmount,
   HOUR_MS,
   hasLimit,
-  NAME,
   type OwnBox,
   ownBoxes,
   pickBox,
@@ -150,6 +149,13 @@ const OffersArgs = z.strictObject({
     .describe(
       "Hours the box must stay rentable; hosts set an end date after which Vast stops the box. Offers with no end date always pass.",
     ),
+  min_cuda: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      "Least CUDA version the host supports (Vast's cuda_max_good), e.g. 12.9. A CUDA 12.x image needs a host whose cuda_max_good is at least that version, or it fails with 'cudaGetDeviceCount() Error 804: forward compatibility was attempted on non supported HW'. Offers that report no CUDA version are left out.",
+    ),
   limit: z.number().int().min(1).max(50).default(10),
 });
 
@@ -170,6 +176,7 @@ function offersTool(deps: ToolDeps): ExtensionTool {
         region: args.region,
         minInetDownMbps: args.min_inet_down_mbps,
         minHours: args.min_hours,
+        minCuda: args.min_cuda,
         limit: args.limit,
       };
       const offers = await searchOffers(filters, deps.get);
@@ -179,7 +186,8 @@ function offersTool(deps: ToolDeps): ExtensionTool {
       const lines = offers.map((o) => {
         const gpus = (o.num_gpus ?? 1) > 1 ? `${o.num_gpus}x ` : "";
         const perf = perfCells(o, cpus);
-        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM · GPU perf ${perf.gpuPerf} (${perf.gpuPerDollar} per $/h) · ${perf.memBandwidth} GB/s memory · ${perf.cpu} · CPU perf ${perf.cpuPerf} (${perf.cpuPerDollar} per $/h) · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · verified ${perf.verified} · ${o.geolocation ?? "?"} · ${perf.down} Mbps down · ${endsInText(o, now)}`;
+        const cuda = cudaText(o);
+        return `offer ${o.ask_contract_id}: ${gpus}${o.gpu_name ?? "?"} · ${shareText(o)} · ${vramText(o)} VRAM${cuda === "" ? "" : ` · ${cuda}`} · GPU perf ${perf.gpuPerf} (${perf.gpuPerDollar} per $/h) · ${perf.memBandwidth} GB/s memory · ${perf.cpu} · CPU perf ${perf.cpuPerf} (${perf.cpuPerDollar} per $/h) · ${Math.round((o.cpu_ram ?? 0) / 1000)} GB RAM · ${Math.round(o.disk_space ?? 0)} GB disk · ${rateCell(o.dph_total)}/h · reliability ${(o.reliability ?? 0).toFixed(3)} · verified ${perf.verified} · ${o.geolocation ?? "?"} · ${perf.down} Mbps down · ${endsInText(o, now)}`;
       });
       return `${lines.join("\n")}\n\nRates include the disk; "per $/h" divides by that rate; CPU perf is PassMark scaled to the rented threads ("unscored": no PassMark entry). Offers go in a moment: vast_rent looks each up again.`;
     },
@@ -210,7 +218,7 @@ function boxLine({ box, id, name }: OwnBox, lease: Lease | null, deps: ToolDeps)
 function boxesTool(deps: ToolDeps): ExtensionTool {
   return defineTool(
     "vast_boxes",
-    "The Vast.ai account's credit, burn and runway, then this session's boxes with status, rate, spent of budget, lease end, the host's end date (when the box is saved and destroyed 30 minutes before) and ssh command. Boxes of other sessions are not listed, but their spend is in the account line.",
+    "The Vast.ai account's credit, burn and runway, then this session's boxes with status, rate, spent of budget, lease end, the host's end date (when, with lease enforcement on, the box is saved and destroyed 30 minutes before) and ssh command. Boxes of other sessions are not listed, but their spend is in the account line.",
     z.strictObject({}),
     async (_args, ctx) => {
       const [boxes, leases, credit] = await Promise.all([
@@ -221,6 +229,11 @@ function boxesTool(deps: ToolDeps): ExtensionTool {
       const lines = boxes.map((b) => boxLine(b, leaseOf(leases, b.id, b.label), deps));
       return [
         accountLine(credit),
+        ...(deps.enforce
+          ? []
+          : [
+              "Lease enforcement is off (config.json): leases and budgets destroy nothing. A box bills until vast_cancel ends it.",
+            ]),
         ...(lines.length === 0 ? ["This session has no Vast.ai boxes."] : lines),
       ].join("\n");
     },
@@ -278,14 +291,14 @@ const ExtendArgs = z.strictObject({
 function extendTool(deps: ToolDeps): ExtensionTool {
   return defineTool(
     "vast_extend",
-    "Add hours to one of this session's boxes' leases. Free while the box's cost to the new end stays within its budget; otherwise the reader is asked, on a card, to raise the budget, and the box is extended as far as the budget they confirm allows. A lease reaches at most 24 hours ahead, and never past 30 minutes before the host's end date, when the box is saved and destroyed.",
+    "Add hours to one of this session's boxes' leases. Free while the box's cost to the new end stays within its budget; otherwise the reader is asked, on a card, to raise the budget, and the box is extended as far as the budget they confirm allows. A lease reaches at most 24 hours ahead, and never past 30 minutes before the host's end date, when (with lease enforcement on) the box is saved and destroyed.",
     ExtendArgs,
     async (args, ctx) => {
       const box = pickBox(await ownBoxes(deps, ctx.session), args.name);
       const lease = leaseOf(await readLeases(deps.store), box.id, box.label);
       if (lease === null) {
         throw new Error(
-          `${box.name} has no lease: it is destroyed soon. Rent a new box with vast_rent.`,
+          `${box.name} has no lease, so it cannot be extended. Rent a new box with vast_rent.`,
         );
       }
       const now = deps.now();
@@ -312,12 +325,6 @@ function extendTool(deps: ToolDeps): ExtensionTool {
   );
 }
 
-/** The latest a lease may end for this box: `EXPIRY_MARGIN_MS` before the host's end date; null when it has none. */
-function hostCapOf(box: Instance): number | null {
-  const end = hostEnd(box);
-  return end === null ? null : end - EXPIRY_MARGIN_MS;
-}
-
 type Raise = { box: OwnBox; lease: Lease; hours: number; need: number; wanted: number };
 
 /** Ask the reader for a new budget on a one-row card; their amount, or null when they chose none. */
@@ -330,7 +337,7 @@ async function askRaise(
   const spent = spentOf(box.box, deps.now()) ?? 0;
   const credit = await creditNow(deps, { box: box.id });
   const guard = creditGuard(deps, credit, rate, RAISE_ACK, spent);
-  const hint = `Suggested by Claude: ${hours} more hours at ${rateCell(rate)} per hour, ${dollars(need)} in all. The box is saved and destroyed when it has cost this much.`;
+  const hint = `Suggested by Claude: ${hours} more hours at ${rateCell(rate)} per hour, ${dollars(need)} in all. ${deps.enforce ? "The box is saved and destroyed when it has cost this much." : "Lease enforcement is off, so nothing destroys the box at this amount."}`;
   const answer = await ctx.pick({
     title: `Raise the budget of ${box.name}? ${hours} more hours would cost ${dollars(need)} in all, more than its budget of ${budgetText(lease.budget ?? 0)}.`,
     columns: ["Box", "$/h", "Spent", "Budget", "Extend by", "New lease end"],
@@ -374,15 +381,7 @@ async function applyExtension(
 ): Promise<string> {
   const now = deps.now();
   const budget = confirmed ?? lease.budget;
-  const from = Math.max(lease.until, now);
-  const limit = budget === null ? null : budgetEnd(box, budget);
-  const hostCap = hostCapOf(box);
-  const end = Math.min(
-    from + hours * HOUR_MS,
-    limit ?? Number.POSITIVE_INFINITY,
-    hostCap ?? Number.POSITIVE_INFINITY,
-  );
-  const allowed = (end - from) / HOUR_MS;
+  const { from, end, allowed, hostCap } = reachOf(box, lease, hours, budget, now);
   const target = targetOf(lease);
   const next = await updateLeases(deps.store, (leases) => {
     const raised =
@@ -399,7 +398,11 @@ async function applyExtension(
   });
   deps.refresh();
   const cost = budget === null ? "" : `, budget ${budgetText(budget)}`;
-  const note = limitNote({ box, hours, from, end, hostCap, budgetLimited: budget !== null }, now);
+  const note = limitNote(
+    { box, hours, from, end, hostCap, budgetLimited: budget !== null },
+    now,
+    deps.enforce,
+  );
   return [
     allowed > 0
       ? `${name}'s lease now runs until ${endText(next.until, now)}${cost}.`
@@ -423,53 +426,15 @@ type Limited = {
 function limitNote(
   { box, hours, from, end, hostCap, budgetLimited }: Limited,
   now: number,
+  enforce: boolean,
 ): string {
   if (end - from >= hours * HOUR_MS - 1) return "";
   const fit = end > from ? ` Only ${span(end - from)} of the ${hours} hours fit.` : "";
   const hostEnds = hostEnd(box);
   if (hostCap !== null && hostEnds !== null && end >= hostCap - 1) {
-    return `The host's end date limits it: ${endText(hostEnds, now)}. Vast.ai stops the box then, so it is saved and destroyed ${span(EXPIRY_MARGIN_MS)} before.${fit}`;
+    return `The host's end date limits it: ${endText(hostEnds, now)}. Vast.ai stops the box then${enforce ? `, so it is saved and destroyed ${span(EXPIRY_MARGIN_MS)} before` : " (lease enforcement is off, so nothing saves or destroys it first)"}.${fit}`;
   }
   if (!budgetLimited) return "";
   const spent = spentOf(box, now);
   return `Only ${span(Math.max(0, end - from))} of the ${hours} hours fit the budget${spent === null ? "" : ` (spent ${dollars(spent)})`}.`;
-}
-
-function cancelTool(deps: ToolDeps): ExtensionTool {
-  return defineTool(
-    "vast_cancel",
-    "End one of this session's boxes' leases now: the box is saved (/root/.lease/save, if it has one) and destroyed within a minute. A booking nothing was rented for is just dropped.",
-    z.strictObject({ name: z.string().describe("The box's name (or its Vast.ai id)") }),
-    async (args, ctx) => {
-      const owner = await deps.owner();
-      const leases = await readLeases(deps.store);
-      const label = leaseLabel(leases, owner, ctx.session, args.name);
-      const lease = await updateLeases(deps.store, (current) => cancel(current, { label }));
-      if (lease.box !== null) deps.log("cancelled", { instance: lease.box, label });
-      deps.refresh();
-      return lease.box === null
-        ? `Dropped the booking for ${args.name}.`
-        : `Cancelled: ${args.name} (#${lease.box}) is saved and destroyed within a minute.`;
-    },
-  );
-}
-
-/** The label of this session's lease for a name (a Vast.ai id is looked up among the leases). */
-function leaseLabel(
-  leases: readonly Lease[],
-  owner: string,
-  session: string,
-  which: string,
-): string {
-  const byId = /^\d+$/.test(which) ? leases.find((l) => l.box === Number(which)) : undefined;
-  if (byId !== undefined) {
-    const mine = boxLabels(owner, session, "").some((label) => byId.label.startsWith(label));
-    if (!mine) throw new Error(`Box ${which} is not this session's`);
-    return byId.label;
-  }
-  if (!NAME.test(which)) throw new Error(`Not a box name: ${which}`);
-  const label = boxLabels(owner, session, which).find((l) => find(leases, { label: l }) !== null);
-  if (label === undefined)
-    throw new Error(`This session has no lease for ${which}: vast_boxes lists its boxes`);
-  return label;
 }

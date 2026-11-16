@@ -14,28 +14,24 @@
  */
 
 import { z } from "zod";
-import { type CpuIndex, cpuLink, cpuScores } from "./cpu-score";
+import { cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
-import { familyRefusal, type Pending } from "./family";
-import { gpuLink } from "./gpu-link";
+import { holdName } from "./family";
 import { book, dropBooking, MAX_AHEAD_MS, type Replace, setReplace, updateLeases } from "./leases";
+import { endsTooSoon, fetchOffer, type Offer, perfCells, timeLeft } from "./offers";
 import {
-  endsCell,
-  endsTooSoon,
-  fetchOffer,
-  gpuCell,
-  type Offer,
-  perfCells,
-  placeOf,
-  timeLeft,
-  vramCell,
-} from "./offers";
-import type { ExtensionPick, ExtensionTool, ExtensionToolContext } from "./prifly-api";
+  OLLAMA_CONTEXT_DEFAULT,
+  OLLAMA_IMAGE,
+  OLLAMA_PORT,
+  OllamaArgs,
+  ollamaScript,
+} from "./ollama";
+import type { ExtensionPick, ExtensionTool, ExtensionToolContext, RentUi } from "./prifly-api";
+import { type CellInput, columnsFor, NEEDS } from "./rent-columns";
 import { sessionLabel } from "./rules";
 import { budgetText, dollars } from "./spend";
 import {
   type CreditGuard,
-  cardRate,
   confirmOver,
   creditGuard,
   creditNow,
@@ -53,6 +49,8 @@ import {
 } from "./tool-kit";
 import { type CreateRequest, createInstance, listInstances, OfferGone, withKeys } from "./vast-api";
 
+export { OLLAMA_CONTEXT_DEFAULT, OLLAMA_IMAGE, ollamaScript } from "./ollama";
+
 const PORT = /^\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/;
 
 const RentArgs = z.strictObject({
@@ -66,7 +64,7 @@ const RentArgs = z.strictObject({
     .number()
     .positive()
     .describe(
-      "Your suggested budget in dollars for the whole rental. The reader sees it on the card and may change it; the confirmed amount is the box's hard limit: it is saved and destroyed when it has cost this much.",
+      "Your suggested budget in dollars for the whole rental. The reader sees it on the card and may change it; the confirmed amount is the box's limit: with lease enforcement on (the default) it is saved and destroyed when it has cost this much.",
     ),
   offers: z
     .array(z.number().int().positive())
@@ -75,12 +73,20 @@ const RentArgs = z.strictObject({
     .describe(
       "Offer ids (ask_contract_id from vast_offers), best first. If the chosen one is gone, the next that fits the budget is rented.",
     ),
-  image: z.string().min(1).describe("Docker image, e.g. ubuntu:22.04"),
+  image: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Docker image, e.g. ubuntu:22.04. Required, except with ollama, where it defaults to ollama/ollama.",
+    ),
   disk_gb: z.number().positive().describe("Disk in GB. It is billed, so it is in the rate."),
   onstart: z
     .string()
     .optional()
-    .describe("Shell commands to run on start. Default: sleep infinity, so a bare image stays up."),
+    .describe(
+      "Shell commands to run on start. Default: sleep infinity, so a bare image stays up. Not with ollama, which writes the onstart itself.",
+    ),
   env: z
     .record(z.string(), z.string())
     .optional()
@@ -89,26 +95,86 @@ const RentArgs = z.strictObject({
     .array(z.string().regex(PORT))
     .optional()
     .describe('Ports to open, e.g. "8080:8080/tcp".'),
+  ollama: OllamaArgs.optional().describe(
+    "Serve Ollama for prifly's model providers, in one choice: the image defaults to ollama/ollama, the onstart starts `ollama serve` on the box's own 127.0.0.1:11434 and pulls the models, and port 11434 is never opened. prifly reaches it through `ssh -L <port>:127.0.0.1:11434`. Do not pass onstart, or a port 11434, with it.",
+  ),
   purpose: z
     .string()
     .min(1)
     .describe(
       "What the box is for and why this budget: it is shown on the card, in the reader's words, as the reason for the suggestion.",
     ),
+  need: z
+    .enum(NEEDS)
+    .describe(
+      'What the work is bound by, which decides the columns on the card. "gpu": the work runs on the GPU (training, inference); the card shows every column. "cpu": CPU-bound work (compiles, embeddings on the CPU, data crunching); the card drops the GPU columns and keeps CPU performance. "io": it waits on the network or remote APIs, so the cheapest reliable box wins; the card drops the GPU and CPU performance columns.',
+    ),
+  need_note: z
+    .string()
+    .min(1)
+    .describe(
+      'One line saying concretely what the job needs, shown on the card as "Needs: ...", e.g. "1-2 threads, no GPU: waits on Gemini".',
+    ),
 });
-type RentArgs = z.infer<typeof RentArgs>;
+export type RentArgs = z.infer<typeof RentArgs>;
 
 const DESCRIPTION =
-  "Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account's credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader's word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. If the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box's id, label, rate, budget, lease end and ssh command. Use vast_offers first to find offer ids. Never rent any other way.";
+  'Rent a Vast.ai box. Shows the reader the offers on a card with an editable budget, and what of it the account\'s credit covers after everything already running on the account, and waits for their answer; only then is a lease booked and the box created. A budget over what the credit covers needs the reader\'s word that they will top up. Offers that are gone, could not run an hour within the budget, or end (host end date) before the budget runs out plus an hour, are left off. If the chosen offer is gone, the next card row that fits the budget is rented. With lease enforcement on (the default), if the box later turns out broken (ssh refused for 3 minutes, a log showing bad ownership or modes, or stuck in created or loading for 10 minutes), the plugin cancels it and rents the next card row that fits what is left of the confirmed budget by itself, at most 3 times, with no new card. Returns the box\'s id, label, rate, budget, lease end and ssh command. Pass need ("gpu", "cpu" or "io") and need_note so the card shows what the job needs and only the columns that matter. With ollama (models, optional context_length) the box serves Ollama for prifly\'s model providers: no image or onstart needed, and 11434 is never opened (prifly tunnels over ssh). Use vast_offers first to find offer ids. Never rent any other way.';
 
 /**
  * Run first in every box's onstart so sshd's "bad ownership or modes" check can
- * never lock us out (VAI-35). Errors are dropped and `|| true` keeps `set -e`
+ * never lock us out (VAI-35), and so Vast's login wrapper does not put every
+ * ssh session in tmux: without `/root/.no_auto_tmux` a non-interactive
+ * `ssh host cmd` prints "open terminal failed: not a terminal" and runs
+ * nothing (VAI-49). Errors are dropped and `|| true` keeps `set -e`
  * from ending the script. No `pkill`/HUP: it kills sshd on images that run it
  * in the foreground (VAI-38).
  */
 export const SSH_KEY_REPAIR =
-  '{ chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
+  '{ touch /root/.no_auto_tmux; chmod go-w /root; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; sed -i "s/^#*[[:space:]]*StrictModes.*/StrictModes no/" /etc/ssh/sshd_config; } 2>/dev/null || true';
+
+/** What the create request carries for the args: image, onstart, env. A throw says what conflicts. */
+export function launchOf(args: RentArgs): {
+  image: string;
+  onstart: string;
+  env: Record<string, string>;
+} {
+  const ports = args.ports ?? [];
+  const ollama = args.ollama;
+  if (ollama !== undefined) {
+    if (args.onstart !== undefined) {
+      throw new Error("ollama writes the onstart itself: pass either ollama or onstart, not both");
+    }
+    if (ports.some((port) => port.split(/[:/]/).includes(String(OLLAMA_PORT)))) {
+      throw new Error(`Port ${OLLAMA_PORT} is never opened: prifly reaches Ollama through ssh -L`);
+    }
+  } else if (args.image === undefined) {
+    throw new Error("image is required unless ollama is given");
+  }
+  return {
+    image: args.image ?? OLLAMA_IMAGE,
+    onstart: withSshRepair(ollama === undefined ? args.onstart : ollamaScript(ollama)),
+    env: {
+      ...(args.env ?? {}),
+      ...Object.fromEntries(ports.map((port) => [`-p ${port}`, "1"])),
+      ...(ollama === undefined
+        ? {}
+        : {
+            OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
+            OLLAMA_CONTEXT_LENGTH: String(ollama.context_length ?? OLLAMA_CONTEXT_DEFAULT),
+            OLLAMA_KEEP_ALIVE: "-1",
+          }),
+    },
+  };
+}
+
+/** The purpose as the card shows it: a model provider says so first. */
+function purposeOf(args: RentArgs, max: number): string {
+  const own = args.purpose.trim().slice(0, max);
+  return args.ollama === undefined
+    ? own
+    : `Ollama model provider: ${args.ollama.models.join(", ")}. ${own}`;
+}
 
 /** The repair, then the caller's onstart (or `sleep infinity`, which keeps the box up). */
 export function withSshRepair(onstart?: string): string {
@@ -116,110 +182,21 @@ export function withSshRepair(onstart?: string): string {
 }
 
 export function rentTool(deps: ToolDeps): ExtensionTool {
-  const pending = new Set<Pending>();
-  return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) =>
-    rent(deps, pending, args, ctx),
-  );
+  return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
 }
 
 /** The hint under the amount field: the session's reason for the suggestion. */
-function hintOf(purpose: string): string {
-  const reason = purpose
-    .trim()
-    .replace(/[.\s]+$/, "")
-    .slice(0, 240);
-  return `Suggested by Claude: ${reason}. The box is saved and destroyed when it has cost this much.`;
-}
-
-const COLUMNS = [
-  "GPU",
-  "VRAM",
-  "GPU perf · /$",
-  "Mem GB/s",
-  "CPU",
-  "CPU perf · /$",
-  "RAM",
-  "Disk",
-  "Mbps",
-  "$/h",
-  "Hours",
-  "Ends in",
-  "Rel.",
-  "Verified",
-  "Where",
-  "Offer",
-];
-const col = (name: string) => COLUMNS.indexOf(name);
-const GPU_COLUMN = col("GPU");
-const CPU_COLUMN = col("CPU");
-const WHERE_COLUMN = col("Where");
-const OFFER_COLUMN = col("Offer");
-
-/** Vast's console, on one offer. Unverified: the console is a single-page app and may ignore `ask`. */
-function offerUrl(offer: Offer): string {
-  return `https://cloud.vast.ai/?ask=${offer.ask_contract_id}`;
+function hintOf(purpose: string, enforce: boolean): string {
+  const reason = purpose.replace(/[.\s]+$/, "").slice(0, 240);
+  const ends = enforce
+    ? "The box is saved and destroyed when it has cost this much."
+    : "Lease enforcement is off, so nothing destroys the box at this amount: it bills until vast_cancel ends it.";
+  return `Suggested by Claude: ${reason}. ${ends}`;
 }
 
 /** Hours the box is meant to run: what the budget buys, held to the longest lease. */
 export function runHours(offer: Offer, budget: number): number {
   return Math.min(MAX_AHEAD_MS / HOUR_MS, budget / offer.dph_total);
-}
-
-/** One card row. `flags`: the Where cell is the bare country code, which a prifly with "pick-cells" draws as a flag. */
-function rowOf(
-  offer: Offer,
-  budget: number,
-  now: number,
-  cpus: CpuIndex,
-  flags: boolean,
-): string[] {
-  const gb = (mb: number | undefined) => (mb === undefined ? "?" : `${Math.round(mb / 1000)} GB`);
-  const perf = perfCells(offer, cpus);
-  const place = placeOf(offer.geolocation);
-  return [
-    gpuCell(offer),
-    vramCell(offer),
-    perf.gpuPerf === "?" ? "–" : `${perf.gpuPerf} · ${perf.gpuPerDollar}`,
-    perf.memBandwidth,
-    perf.cpu,
-    perf.cpuPerf === "unscored" ? "–" : `${perf.cpuPerf} · ${perf.cpuPerDollar}`,
-    gb(offer.cpu_ram),
-    `${Math.round(offer.disk_space ?? 0)} GB`,
-    perf.down,
-    cardRate(offer.dph_total),
-    (budget / offer.dph_total).toFixed(1),
-    endsCell(offer, now),
-    (offer.reliability ?? 0).toFixed(3),
-    perf.verified,
-    flags && place.code !== null ? place.code : place.text,
-    String(offer.ask_contract_id),
-  ];
-}
-
-/** One link or null per cell: the GPU and CPU names to their PassMark pages, and the offer to Vast's console. */
-function linksOf(offer: Offer, cpus: CpuIndex): (string | null)[] {
-  const links: (string | null)[] = COLUMNS.map(() => null);
-  links[GPU_COLUMN] = gpuLink(offer.gpu_name);
-  links[CPU_COLUMN] = cpuLink(offer, cpus);
-  links[OFFER_COLUMN] = offerUrl(offer);
-  return links;
-}
-
-/** Hover text and how to draw the cells that are not plain text: the country as a flag, the offer as a link icon (when its link is sent). */
-function cellsOf(
-  offer: Offer,
-  offerLink: boolean,
-): { titles: (string | null)[]; kinds: ("flag" | "link-icon" | null)[] } {
-  const titles: (string | null)[] = COLUMNS.map(() => null);
-  const kinds: ("flag" | "link-icon" | null)[] = COLUMNS.map(() => null);
-  const place = placeOf(offer.geolocation);
-  if (place.code !== null) {
-    titles[WHERE_COLUMN] = place.full;
-    kinds[WHERE_COLUMN] = "flag";
-  }
-  titles[OFFER_COLUMN] = `Offer ${offer.ask_contract_id} on Vast.ai`;
-  if (offerLink) kinds[OFFER_COLUMN] = "link-icon";
-  return { titles, kinds };
 }
 
 /** Today's offers for the ids, in the session's order, without those gone, too dear for an hour or ending before the budget runs out. */
@@ -245,16 +222,29 @@ async function cardOf(
   const cpus = await cpuScores(deps.get, now);
   const links = hasLinks(deps);
   const cells = hasCells(deps);
-  const marks = cells ? offers.map((offer) => cellsOf(offer, links)) : [];
+  const columns = columnsFor(args.need);
+  // One cell per offer and chosen column: rows, links, titles and kinds cannot drift apart.
+  const built = offers.map((offer) => {
+    const input: CellInput = {
+      offer,
+      budget: args.budget,
+      now,
+      cpus,
+      perf: perfCells(offer, cpus),
+      flags: cells,
+      offerLink: links,
+    };
+    return columns.map((column) => column.cell(input));
+  });
   return {
-    title: `Rent ${args.name}: ${args.purpose.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
-    columns: COLUMNS,
-    rows: offers.map((offer) => rowOf(offer, args.budget, now, cpus, cells)),
-    ...(links ? { links: offers.map((offer) => linksOf(offer, cpus)) } : {}),
+    title: `Rent ${args.name}: ${purposeOf(args, 120)}. Needs: ${args.need_note.trim().slice(0, 120)}. If the box you pick is gone, the next row that fits the budget is rented.`,
+    columns: columns.map((column) => column.name),
+    rows: built.map((row) => row.map((cell) => cell.text)),
+    ...(links ? { links: built.map((row) => row.map((cell) => cell.link ?? null)) } : {}),
     ...(cells
       ? {
-          titles: marks.map((mark) => mark.titles),
-          cellKinds: marks.map((mark) => mark.kinds),
+          titles: built.map((row) => row.map((cell) => cell.title ?? null)),
+          cellKinds: built.map((row) => row.map((cell) => cell.kind ?? null)),
         }
       : {}),
     action: "Rent",
@@ -263,45 +253,65 @@ async function cardOf(
       prefix: "$",
       value: args.budget,
       perRow: { column: "Hours", rateColumn: "$/h", unit: "h" },
-      ...guardedAmount(deps, hintOf(args.purpose), guard),
+      ...guardedAmount(deps, hintOf(purposeOf(args, 240), deps.enforce), guard),
     },
   };
 }
 
-async function rent(
+/** What the reader's card came to: a box, no choice, no top-up, or no card (a family member has the name). */
+export type Outcome =
+  | { kind: "rented"; id: number; text: string }
+  | { kind: "none" }
+  | { kind: "declined" }
+  | { kind: "refused"; text: string };
+
+async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): Promise<string> {
+  const outcome = await rentOnCard(deps, args, ctx.session, ctx);
+  if (outcome.kind === "none") {
+    return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
+  }
+  if (outcome.kind === "declined") {
+    return "The reader did not rent past what the Vast credit covers. Nothing was rented and nothing is booked.";
+  }
+  return outcome.text;
+}
+
+/**
+ * The rental both entry points share, the `vast_rent` tool and the New session
+ * dialog's rent row: check the label is free and no session of the same
+ * family has a box of this name, look the offers up, show the card over
+ * `session`, and create the box with what the reader confirmed. A throw says
+ * why nothing was rented.
+ */
+export async function rentOnCard(
   deps: ToolDeps,
-  pending: Set<Pending>,
   args: RentArgs,
-  ctx: ExtensionToolContext,
-): Promise<string> {
+  session: string,
+  ui: RentUi,
+): Promise<Outcome> {
+  launchOf(args); // a conflict throws before anything is looked up
   const owner = await deps.owner();
-  const label = sessionLabel(owner, ctx.session, args.name);
+  const label = sessionLabel(owner, session, args.name);
   const boxes = await listInstances(await deps.keys(), deps.get);
   // A second box under one label would hold no lease of its own and be destroyed.
   if (boxes.some((box) => box.label === label))
     throw new Error(`This session already has a box named ${args.name}: pick another name`);
-  // No await from this check to the registration, so two calls cannot both pass.
-  const refused = familyRefusal(deps, pending, boxes, {
-    session: ctx.session,
-    name: args.name,
-    owner,
-  });
-  if (refused !== null) return refused;
-  const mine = { session: ctx.session, name: args.name.toLowerCase() };
-  pending.add(mine);
+  const release = holdName(deps, boxes, { session, name: args.name, owner });
+  if (typeof release === "string") return { kind: "refused", text: release };
   try {
-    return await rentConfirmed(deps, args, ctx, label);
+    return await rentConfirmed(deps, args, session, ui, label);
   } finally {
-    pending.delete(mine);
+    release();
   }
 }
 
 async function rentConfirmed(
   deps: ToolDeps,
   args: RentArgs,
-  ctx: ExtensionToolContext,
+  session: string,
+  ui: RentUi,
   label: string,
-): Promise<string> {
+): Promise<Outcome> {
   const offers = await cardOffers(deps, args);
   if (offers.length === 0) {
     throw new Error(
@@ -311,10 +321,8 @@ async function rentConfirmed(
   // The dearest row's rate: the limit then holds whichever row the reader picks.
   const dearest = Math.max(...offers.map((offer) => offer.dph_total));
   const guard = creditGuard(deps, await creditNow(deps, { label }), dearest, ACK_TEXT);
-  const answer = await ctx.pick(await cardOf(deps, args, offers, guard));
-  if (answer === null) {
-    return "The reader chose none of the offers. Nothing was rented and nothing is booked. Ask what to change, then search again.";
-  }
+  const answer = await ui.pick(await cardOf(deps, args, offers, guard));
+  if (answer === null) return { kind: "none" };
   const budget = answer.amount;
   if (budget === null || !Number.isFinite(budget) || budget <= 0) {
     throw new Error("The reader's answer carried no budget, so nothing was rented.");
@@ -323,11 +331,10 @@ async function rentConfirmed(
   if (chosen === undefined)
     throw new Error(`The reader's answer names row ${answer.row}, which is not on the card.`);
   const order = [chosen, ...offers.filter((offer) => offer !== chosen)];
-  const short = await shortfall(deps, ctx, { label, budget, rate: chosen.dph_total });
-  if (short === "declined") {
-    return "The reader did not rent past what the Vast credit covers. Nothing was rented and nothing is booked.";
-  }
-  return await createFirst(deps, { args, label, budget, order, session: ctx.session, short });
+  const short = await shortfall(deps, ui, { label, budget, rate: chosen.dph_total });
+  if (short === "declined") return { kind: "declined" };
+  const made = await createFirst(deps, { args, label, budget, order, session, short });
+  return { kind: "rented", ...made };
 }
 
 /** What the confirmed budget is over the credit, read again now: null when it fits or the credit is unknown. */
@@ -340,7 +347,7 @@ type Short = { over: number; max: number; until: number } | null;
  */
 async function shortfall(
   deps: ToolDeps,
-  ctx: ExtensionToolContext,
+  ui: RentUi,
   { label, budget, rate }: { label: string; budget: number; rate: number },
 ): Promise<Short | "declined"> {
   const credit = await creditNow(deps, { label });
@@ -351,7 +358,7 @@ async function shortfall(
   const short = { over: budget - limit.max, max: limit.max, until };
   deps.log("rent_over_credit", { label, budget, max: limit.max, credit: account.credit });
   if (hasLimit(deps)) return short;
-  return (await confirmOver(ctx, { what: "Rent", amount: budget, limit })) ? short : "declined";
+  return (await confirmOver(ui, { what: "Rent", amount: budget, limit })) ? short : "declined";
 }
 
 type Attempt = {
@@ -364,7 +371,10 @@ type Attempt = {
 };
 
 /** Try the offers in order with the confirmed budget; the booking is dropped unless a box was created. */
-async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
+async function createFirst(
+  deps: ToolDeps,
+  attempt: Attempt,
+): Promise<{ id: number; text: string }> {
   const failures: string[] = [];
   let created = false;
   try {
@@ -373,7 +383,7 @@ async function createFirst(deps: ToolDeps, attempt: Attempt): Promise<string> {
       if (box !== null) {
         created = true;
         await keepReplacements(deps, attempt, { offer, index, box });
-        return await describe(deps, attempt, offer, box);
+        return { id: box.id, text: await describe(deps, attempt, offer, box) };
       }
     }
   } finally {
@@ -448,16 +458,7 @@ async function tryOffer(
   }
   await updateLeases(deps.store, (leases) => book(leases, label, hours, now, budget));
   const until = now + hours * HOUR_MS;
-  const request = {
-    image: args.image,
-    disk: args.disk_gb,
-    label,
-    onstart: withSshRepair(args.onstart),
-    env: {
-      ...(args.env ?? {}),
-      ...Object.fromEntries((args.ports ?? []).map((port) => [`-p ${port}`, "1"])),
-    },
-  };
+  const request = { ...launchOf(args), disk: args.disk_gb, label };
   try {
     const box = await withKeys(await deps.keys(), (key) =>
       createInstance(key, id, request, deps.get),
@@ -491,7 +492,7 @@ async function describe(
   deps.refresh();
   return [
     `Rented ${args.name}: Vast.ai #${id}, label ${label}.`,
-    `Rate: ${dollars(offer.dph_total)}/h. Budget: ${budgetText(budget)}, the reader's confirmed amount: the box is saved and destroyed when it has cost that much.`,
+    `Rate: ${dollars(offer.dph_total)}/h. Budget: ${budgetText(budget)}, the reader's confirmed amount${deps.enforce ? ": the box is saved and destroyed when it has cost that much" : ". Lease enforcement is off, so nothing destroys the box at that amount: it bills until vast_cancel ends it"}.`,
     `Lease until ${endText(until, deps.now())}; vast_extend adds time. vast_cancel ends it.`,
     ...(short === null
       ? []

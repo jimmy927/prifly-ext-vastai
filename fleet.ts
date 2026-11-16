@@ -21,7 +21,7 @@ import { cardLoad, type GpuHold } from "./load";
 import { isManaged, leaseLine } from "./machine-card";
 import type { DecorationTone, ExtensionSession } from "./prifly-api";
 import { parseLabel } from "./rules";
-import { sshCommand, sshTarget } from "./run";
+import { sshRoutes } from "./run";
 import type { Instance } from "./vast-api";
 
 export type BoxState = "running" | "starting" | "disk";
@@ -170,7 +170,6 @@ function leaseOf(
 export function boxCard(box: Instance, deps: CardDeps): BoxCard {
   const who = whoseBox(box, deps);
   const state = stateOf(box);
-  const target = sshTarget(box);
   const seconds = (at: number | null | undefined) => (at == null ? null : at * 1000);
   return {
     ...who,
@@ -189,7 +188,7 @@ export function boxCard(box: Instance, deps: CardDeps): BoxCard {
     load: state === "running" ? cardLoad(box, deps.hold, deps.now) : null,
     startedAt: seconds(box.start_date),
     endsAt: seconds(box.end_date),
-    ssh: target === null ? null : sshCommand(target.host, target.port, deps.sshKey).join(" "),
+    ssh: sshRoutes(box, deps.sshKey)[0]?.exec.join(" ") ?? null,
   };
 }
 

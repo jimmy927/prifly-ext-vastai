@@ -11,17 +11,20 @@ import {
   overText,
 } from "./credit";
 import { readLeases } from "./leases";
+import { readOwner } from "./owner";
 import type {
   ExtensionApi,
   ExtensionSession,
   ExtensionTool,
   ExtensionToolContext,
   PickAmount,
+  RentUi,
 } from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
-import { sshCommand } from "./run";
+import { addressOf, routesOf } from "./run";
 import { budgetText, dollars } from "./spend";
 import type { Store } from "./store";
+import type { TakeDown } from "./take-down";
 import { type Fetch, getAccount, type Instance, listInstances, withKeys } from "./vast-api";
 
 /** Everything the tools reach outside themselves, so a test can hand in fakes. */
@@ -43,6 +46,12 @@ export type ToolDeps = {
   /** The sessions the host knows now (`api.sessions`). */
   sessions: () => ExtensionSession[];
   credit: CreditConfig;
+  /** Whether the enforcer destroys what breaks a lease or a budget (`enforce` in config.json, on by default). */
+  enforce: boolean;
+  /** Save and destroy a box now, confirmed against Vast.ai's list: `Enforcer.cancelNow`. */
+  takeDown: (box: Instance) => Promise<TakeDown>;
+  /** How long `vast_cancel` waits for the take-down before it says it is still going; 4 minutes when left out. */
+  cancelWaitMs?: number;
 };
 
 /** Whether this prifly's pick card takes `amount.limit`. */
@@ -59,6 +68,19 @@ export function hasLinks(deps: ToolDeps): boolean {
 export function hasCells(deps: ToolDeps): boolean {
   return deps.features.includes("pick-cells");
 }
+
+/** Whether this prifly shows rent and setup in its New session dialog (`setup`, `rent`, `api.onRent`). */
+export function hasRentFromDialog(features: readonly string[] | undefined): boolean {
+  return features?.includes("rent-from-dialog") ?? false;
+}
+
+/** What the tools read of the host: the owner, its log, its features and the sessions it knows. */
+export const hostDeps = (api: ExtensionApi) => ({
+  owner: () => readOwner(api.folder, process.env),
+  log: api.log.bind(api),
+  features: api.features ?? [],
+  sessions: () => api.sessions(),
+});
 
 /**
  * The rate on the rent card: "0.45", "12.50". It stays a number, and prifly
@@ -166,8 +188,8 @@ export function endText(until: number, now: number): string {
 
 /** An ssh command for a box, or null while Vast.ai has not given it an address. */
 export function sshText(box: Instance, sshKey: string | null): string | null {
-  const { ssh_host: host, ssh_port: port } = box;
-  return host === undefined || port === undefined ? null : sshCommand(host, port, sshKey).join(" ");
+  const address = addressOf(box);
+  return address === null ? null : (routesOf(address, sshKey)[0]?.exec.join(" ") ?? null);
 }
 
 /** "0.485": a rate for a table cell the pick card does arithmetic on. */
@@ -228,7 +250,7 @@ export function guardedAmount(
  * reader's word: ask on a second card. True when they gave it.
  */
 export async function confirmOver(
-  ctx: ExtensionToolContext,
+  ctx: RentUi,
   {
     what,
     amount,

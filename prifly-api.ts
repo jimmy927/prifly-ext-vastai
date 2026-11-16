@@ -103,6 +103,11 @@ export type ExtensionMachine = {
   arch?: string;
   /** The argv that runs a command there: `["ssh","root@1.2.3.4","-p","2222"]`. */
   exec?: string[];
+  /**
+   * Every way to run a command there, tried in order (the next when ssh cannot
+   * connect). `exec` is the first one's argv, for a prifly that does not read this.
+   */
+  routes?: { label?: string; exec: string[] }[];
   access?: string;
   trust?: "ask-first" | "use-freely";
   notes?: string;
@@ -115,6 +120,18 @@ export type ExtensionMachine = {
   }[];
   /** The session (or its first 8 characters) that rented it, for whom it is use-freely. */
   ownerSession?: string;
+  /**
+   * The host may install Claude Code on this machine over its routes. Only on
+   * a prifly whose `features` include "rent-from-dialog": an older one refuses
+   * the field.
+   */
+  setup?: "claude-code";
+  /**
+   * On the `kind: "provider"` machine: prifly shows a rent row in the New
+   * session dialog for these needs. Only on a prifly whose `features` include
+   * "rent-from-dialog".
+   */
+  rent?: { needs: readonly ("cpu" | "gpu")[] };
   status?: { text: string; tone?: DecorationTone };
   actions?: DecorationAction[];
 };
@@ -185,6 +202,23 @@ export type ExtensionToolContext = {
   /** Aborted when the session or the call goes away. */
   signal: AbortSignal;
 };
+
+/** A rent request from the New session dialog's rent row. */
+export type RentRequest = {
+  /** The full id of the session the box is for. */
+  sessionId: string;
+  need: "cpu" | "gpu";
+  hours: number;
+  purpose: string;
+};
+
+/** `key` is the new box's machine key, `String(box.id)`. */
+export type RentResult = { ok: true; key: string } | { ok: false; reason: string };
+
+/** What a rent handler can ask the reader: a card over the request's session. */
+export type RentUi = { pick: ExtensionToolContext["pick"] };
+
+export type RentHandler = (req: RentRequest, ui: RentUi) => Promise<RentResult>;
 
 export type ExtensionTool = {
   /** `^[a-z][a-z0-9_]{0,47}$`; the session sees it as `mcp__prifly__<name>`. */
@@ -309,6 +343,17 @@ export type ExtensionLogEntry<T = unknown> = {
   entry: T;
 };
 
+/** A machine a running campaign holds: it must outlive its lease while its budget covers it. */
+export type CampaignHold = {
+  /** The key this extension gave the machine in `machines.report`: the Vast.ai instance id. */
+  machineKey: string;
+  /** The session to wake when the box cannot be kept. */
+  leadSession: string;
+  /** Remote globs to copy off the box before it is destroyed; empty: the default (`campaign.ts`). */
+  save: string[];
+  reason: string;
+};
+
 export type ExtensionApi = {
   /**
    * What this prifly host can do beyond the base contract, by name:
@@ -344,6 +389,12 @@ export type ExtensionApi = {
    */
   onAction(handler: (key: string, action: string) => Promise<string> | string): void;
   /**
+   * Carry out a rent request from the New session dialog's rent row. One
+   * handler per extension. Only on a prifly whose `features` include
+   * "rent-from-dialog"; absent on an older one: call it as `api.onRent?.(...)`.
+   */
+  onRent?(handler: RentHandler): void;
+  /**
    * Tell the reader something that cannot wait for them to look at a chip,
    * under the extension's name; `session` makes a click open that session.
    * Absent on a prifly host older than "notify" — call it as `api.notify?.(…)`.
@@ -363,6 +414,13 @@ export type ExtensionApi = {
   state?: ExtensionStateApi;
   /** The sessions on this machine the host knows now. */
   sessions(): ExtensionSession[];
+  /** Sends `text` into the session as a <prifly-notice>; resumes it first if it ended. Mirrors prifly's `ExtensionApi.prompt`. */
+  prompt(sessionId: string, text: string): Promise<{ delivered: boolean }>;
+  /**
+   * The machines running campaigns hold. Absent on a prifly without
+   * campaigns: no box is held then.
+   */
+  campaigns?: { holds(): CampaignHold[] };
   /** A line in the host's log, under `ext.<id>.<event>`. */
   log(event: string, fields?: Record<string, string | number | boolean | null>): void;
   /** The extension's own folder: where it keeps its config. */

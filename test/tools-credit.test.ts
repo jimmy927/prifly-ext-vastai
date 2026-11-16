@@ -12,6 +12,8 @@ const RENT = {
   image: "ubuntu:22.04",
   disk_gb: 40,
   purpose: "train for about 50 hours",
+  need: "gpu" as const,
+  need_note: "one GPU for the job",
 };
 
 /** A Vast.ai with $100 of credit and another session's box using $40 of it. */

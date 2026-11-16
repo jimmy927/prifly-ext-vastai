@@ -90,12 +90,12 @@ export function statusOf(
       };
     case "grace":
       return {
-        text: `${head} · lease ended ${ends} · destroyed in ${span(verdict.leftMs)} unless extended`,
+        text: `${head} · lease ended ${ends}${enforce ? ` · destroyed in ${span(verdict.leftMs)} unless extended` : " · enforcement off, not destroyed"}`,
         tone: "critical",
       };
     case "unbooked":
       return {
-        text: `${head} · no lease · destroyed in ${span(verdict.leftMs)} unless booked`,
+        text: `${head} · no lease${enforce ? ` · destroyed in ${span(verdict.leftMs)} unless booked` : " · enforcement off, not destroyed"}`,
         tone: "critical",
       };
     default:
@@ -157,7 +157,7 @@ export function leaseLine(
     tone: line.tone ?? (near ? "warning" : null),
     details: [
       ...line.details,
-      `Cost ${cost} of its budget: it is saved and destroyed at the budget`,
+      `Cost ${cost} of its budget${enforce ? ": it is saved and destroyed at the budget" : ""}`,
     ],
   };
 }
@@ -196,14 +196,20 @@ function leaseLineOf(
       return {
         short: `${span(verdict.leftMs)} left`,
         tone: "warning",
-        details: [`Lease ends ${ends}: extend it or the box is destroyed`, ...idle],
+        details: [
+          `Lease ends ${ends}${enforce ? ": extend it or the box is destroyed" : ""}`,
+          ...idle,
+          ...off,
+        ],
       };
     case "grace":
       return {
         short: "lease over",
         tone: "critical",
         details: [
-          `Lease ended ${ends}: destroyed in ${span(verdict.leftMs)} unless extended`,
+          enforce
+            ? `Lease ended ${ends}: destroyed in ${span(verdict.leftMs)} unless extended`
+            : `Lease ended ${ends}`,
           ...off,
         ],
       };
@@ -211,7 +217,10 @@ function leaseLineOf(
       return {
         short: "no lease",
         tone: "critical",
-        details: [`No lease: destroyed in ${span(verdict.leftMs)} unless booked`, ...off],
+        details: [
+          enforce ? `No lease: destroyed in ${span(verdict.leftMs)} unless booked` : "No lease",
+          ...off,
+        ],
       };
     case "due":
       return {
