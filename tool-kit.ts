@@ -11,7 +11,13 @@ import {
   overText,
 } from "./credit";
 import { readLeases } from "./leases";
-import type { ExtensionApi, ExtensionTool, ExtensionToolContext, PickAmount } from "./prifly-api";
+import type {
+  ExtensionApi,
+  ExtensionSession,
+  ExtensionTool,
+  ExtensionToolContext,
+  PickAmount,
+} from "./prifly-api";
 import { parseLabel, sessionLabel, span } from "./rules";
 import { sshCommand } from "./run";
 import { budgetText, dollars } from "./spend";
@@ -34,6 +40,8 @@ export type ToolDeps = {
   log: ExtensionApi["log"];
   /** What the prifly host can do beyond the base contract (`api.features`). */
   features: readonly string[];
+  /** The sessions the host knows now (`api.sessions`). */
+  sessions: () => ExtensionSession[];
   credit: CreditConfig;
 };
 

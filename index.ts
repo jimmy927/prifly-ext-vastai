@@ -55,6 +55,7 @@ import { span } from "./rules";
 import { sshCommand, sshKeyPath, sshKeyProblem, sshTarget } from "./run";
 import { answer, type PanelDeps } from "./spend-panel";
 import { type Store, storeFor } from "./store";
+import type { ToolDeps } from "./tool-kit";
 import { makeTools } from "./tools";
 import {
   destroyInstance,
@@ -101,6 +102,32 @@ export function terminal(
   key: string,
 ): { title: string; command: string[] } | null {
   return panelDeps?.terminal(key) ?? null;
+}
+
+/** What the tools run on: this prifly's folder, features and sessions, and the extension's own state. */
+function toolDeps(
+  api: ExtensionApi,
+  own: {
+    store: Store;
+    config: Config;
+    keys: ToolDeps["keys"];
+    refresh: () => Promise<void>;
+  },
+): ToolDeps {
+  return {
+    store: own.store,
+    owner: () => readOwner(api.folder, process.env),
+    sshKey: own.config.sshKey,
+    keys: own.keys,
+    get: fetch,
+    now: Date.now,
+    sleep: Bun.sleep,
+    refresh: () => void own.refresh(),
+    log: (event, fields) => api.log(event, fields),
+    features: api.features ?? [],
+    sessions: () => api.sessions(),
+    credit: own.config.credit,
+  };
 }
 
 export async function activate(rawApi: ExtensionApi): Promise<() => void> {
@@ -209,21 +236,7 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
     }
   };
   // Absent on a prifly older than "extension tools": the boxes still show.
-  api.tools?.register(
-    makeTools({
-      store,
-      owner: () => readOwner(api.folder, process.env),
-      sshKey: config.sshKey,
-      keys,
-      get: fetch,
-      now: Date.now,
-      sleep: Bun.sleep,
-      refresh: () => void refresh(),
-      log: (event, fields) => api.log(event, fields),
-      features: api.features ?? [],
-      credit: config.credit,
-    }),
-  );
+  api.tools?.register(makeTools(toolDeps(api, { store, config, keys, refresh })));
   // A box's menu, on its chip or machine card, and the same buttons on its panel card.
   const act = async (key: string, action: string): Promise<string> => {
     const hours = EXTEND_HOURS[action];

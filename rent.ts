@@ -16,6 +16,7 @@
 import { z } from "zod";
 import { type CpuIndex, cpuLink, cpuScores } from "./cpu-score";
 import { ACK_TEXT, runwayHours } from "./credit";
+import { familyRefusal, type Pending } from "./family";
 import { gpuLink } from "./gpu-link";
 import { book, dropBooking, MAX_AHEAD_MS, type Replace, setReplace, updateLeases } from "./leases";
 import {
@@ -115,7 +116,10 @@ export function withSshRepair(onstart?: string): string {
 }
 
 export function rentTool(deps: ToolDeps): ExtensionTool {
-  return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) => rent(deps, args, ctx));
+  const pending = new Set<Pending>();
+  return defineTool("vast_rent", DESCRIPTION, RentArgs, (args, ctx) =>
+    rent(deps, pending, args, ctx),
+  );
 }
 
 /** The hint under the amount field: the session's reason for the suggestion. */
@@ -264,13 +268,40 @@ async function cardOf(
   };
 }
 
-async function rent(deps: ToolDeps, args: RentArgs, ctx: ExtensionToolContext): Promise<string> {
-  const label = sessionLabel(await deps.owner(), ctx.session, args.name);
-  const keys = await deps.keys();
+async function rent(
+  deps: ToolDeps,
+  pending: Set<Pending>,
+  args: RentArgs,
+  ctx: ExtensionToolContext,
+): Promise<string> {
+  const owner = await deps.owner();
+  const label = sessionLabel(owner, ctx.session, args.name);
+  const boxes = await listInstances(await deps.keys(), deps.get);
   // A second box under one label would hold no lease of its own and be destroyed.
-  const taken = (await listInstances(keys, deps.get)).some((box) => box.label === label);
-  if (taken)
+  if (boxes.some((box) => box.label === label))
     throw new Error(`This session already has a box named ${args.name}: pick another name`);
+  // No await from this check to the registration, so two calls cannot both pass.
+  const refused = familyRefusal(deps, pending, boxes, {
+    session: ctx.session,
+    name: args.name,
+    owner,
+  });
+  if (refused !== null) return refused;
+  const mine = { session: ctx.session, name: args.name.toLowerCase() };
+  pending.add(mine);
+  try {
+    return await rentConfirmed(deps, args, ctx, label);
+  } finally {
+    pending.delete(mine);
+  }
+}
+
+async function rentConfirmed(
+  deps: ToolDeps,
+  args: RentArgs,
+  ctx: ExtensionToolContext,
+  label: string,
+): Promise<string> {
   const offers = await cardOffers(deps, args);
   if (offers.length === 0) {
     throw new Error(

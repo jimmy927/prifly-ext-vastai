@@ -76,7 +76,17 @@ export type DecorationAction = {
 };
 
 /** A session the host knows, for an extension to match its things against. */
-export type ExtensionSession = { id: string; title: string; cwd: string; state: string };
+export type ExtensionSession = {
+  id: string;
+  title: string;
+  cwd: string;
+  state: string;
+  /**
+   * The full id of the session that started it; absent for one nothing
+   * started. Only on a prifly whose `features` include "session-facts".
+   */
+  parentId?: string;
+};
 
 /**
  * One machine this extension offers sessions to use — a rented box — or,

@@ -7,6 +7,7 @@ import { CREDIT_DEFAULTS } from "../credit";
 import type {
   ExtensionPick,
   ExtensionPickAnswer,
+  ExtensionSession,
   ExtensionTool,
   ExtensionToolContext,
 } from "../prifly-api";
@@ -107,6 +108,7 @@ export async function setup(
   fake: ReturnType<typeof vast>,
   features: readonly string[] = [],
   storeOf: (folder: string) => Store = fileStore,
+  sessions: () => ExtensionSession[] = () => [],
 ) {
   const folder = await mkdtemp(join(tmpdir(), "vastai-tools-"));
   const store = storeOf(folder);
@@ -121,6 +123,7 @@ export async function setup(
     refresh: () => undefined,
     log: () => undefined,
     features,
+    sessions,
     credit: CREDIT_DEFAULTS,
   });
   const tool = (name: string): ExtensionTool => {
