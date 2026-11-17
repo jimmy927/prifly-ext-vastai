@@ -3,6 +3,10 @@
 A [prifly](https://github.com/jimmy927/prifly) extension for
 [Vast.ai](https://vast.ai). It does these things:
 
+![The Vast.ai panel in prifly: three running boxes and one stopped box as cards, each with its session, lease, budget used, load and ssh command, above the total spent](docs/screenshot.png)
+
+*The Vast.ai panel, with invented boxes: each card shows the session that rented the box, its lease, how much of its budget is spent, and its load.*
+
 - **Shows your boxes.** Each rented Vast.ai box appears on the session that
   rented it: as an icon on that session's row in the sidebar, and as a chip
   under the goal when the session is open. The colour shows how busy the box
