@@ -389,16 +389,19 @@ describe("the host's end date", () => {
   });
 });
 
-test("the enforcer destroys with the key from prifly's vault, before any key file", async () => {
+test("the enforcer destroys with the key from its own secrets, before any key file", async () => {
   const seen: { url: string; auth: string }[] = [];
   const get = async (url: string, init: RequestInit) => {
     seen.push({ url, auth: new Headers(init.headers).get("Authorization") ?? "" });
     return new Response("{}", { status: 200 });
   };
-  const vault = { read: async (name: string) => (name === "vastai" ? "vaulted-key" : null) };
-  await restDeps(vault, get).destroy(42);
+  const secrets = {
+    get: async (name: string) => (name === "apiKey" ? "secret-key" : null),
+    set: async () => undefined,
+  };
+  await restDeps({ secrets }, get).destroy(42);
   expect(seen).toEqual([
-    { url: expect.stringContaining("/api/v0/instances/42/"), auth: "Bearer vaulted-key" },
+    { url: expect.stringContaining("/api/v0/instances/42/"), auth: "Bearer secret-key" },
   ]);
 });
 

@@ -67,6 +67,8 @@ import {
   type Fetch,
   type Instance,
   isListed,
+  type KeySources,
+  keySources,
   readApiKeys,
   requestLogs,
   withKeys,
@@ -115,14 +117,15 @@ export type EnforceDeps = BrokenDeps & {
 
 /**
  * Destroy over REST with the account's key, as `guard.sh` does on the box:
- * prifly's vault entry first, when `vault` is there, then the CLI's key files.
+ * this extension's own secret first, then (migrated once) prifly's vault entry
+ * `vastai`, then the CLI's key files.
  */
 export function restDeps(
-  vault: ExtensionApi["vault"],
+  sources: KeySources,
   get: Fetch = fetch,
   sleep: (ms: number) => Promise<unknown> = Bun.sleep,
 ): EnforceDeps {
-  const keys = () => readApiKeys(process.env, homedir(), vault);
+  const keys = () => readApiKeys(process.env, homedir(), sources);
   return {
     destroy: async (id) => withKeys(await keys(), (key) => destroyInstance(key, id, get, sleep)),
     isListed: async (id) => isListed(await keys(), id, get),
@@ -175,7 +178,7 @@ export class Enforcer {
     api: ExtensionApi,
     store: Store,
     config: EnforceConfig,
-    deps: EnforceDeps = restDeps(api.vault),
+    deps: EnforceDeps = restDeps(keySources(api)),
   ) {
     this.#api = api;
     this.#config = config;

@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Account } from "./credit";
-import type { ExtensionVaultApi } from "./prifly-api";
+import type { ExtensionApi, ExtensionSecretsApi, ExtensionVaultApi } from "./prifly-api";
 
 /** The CLI's own default, and its `VAST_URL` override. */
 export const SERVER = process.env["VAST_URL"] ?? "https://console.vast.ai";
@@ -112,28 +112,75 @@ export function parsePage(body: unknown): { rows: Instance[]; next: string | nul
 }
 
 /**
- * The prifly vault entry the key is read from first: an `api-token` entry at
- * level 1, named under `vault` in `prifly-extension.json` so prifly hands it over.
+ * The legacy prifly vault entry `vastai` (an `api-token` entry at level 1,
+ * named under `vault` in `prifly-extension.json` so prifly hands it over). It
+ * is kept for migration only: the key now lives in this extension's own
+ * secrets (`SECRET_KEY`), and a key found here is copied there once.
  */
 export const VAULT_ENTRY = "vastai";
 
+/** The settings field, and the key in `api.secrets`, that holds the Vast.ai API key. */
+export const SECRET_KEY = "apiKey";
+
+/** What `readApiKeys` reads the key from; each absent on an older prifly. */
+export type KeySources = {
+  secrets?: Pick<ExtensionSecretsApi, "get" | "set"> | undefined;
+  vault?: Pick<ExtensionVaultApi, "read"> | undefined;
+  log?: ExtensionApi["log"] | undefined;
+};
+
+/** The key sources `api` has; read off it at each call, so a late-arriving piece counts. */
+export function keySources(api: Pick<ExtensionApi, "secrets" | "vault" | "log">): KeySources {
+  return {
+    secrets: api.secrets,
+    vault: api.vault,
+    log: (event, fields) => api.log(event, fields),
+  };
+}
+
+/** The key from this extension's secrets, else (copied there once) from the legacy vault entry. */
+async function readOwnKey(sources: KeySources): Promise<string | null> {
+  const { secrets, vault, log } = sources;
+  const own = (await secrets?.get(SECRET_KEY))?.trim();
+  if (own) return own;
+  // Migration only: someone who kept the key in the vault entry `vastai`
+  // before the extension had its own secrets keeps working untouched.
+  const legacy = (await vault?.read(VAULT_ENTRY))?.trim();
+  if (!legacy) return null;
+  if (secrets) {
+    try {
+      await secrets.set(SECRET_KEY, legacy);
+      log?.("api_key_migrated", {
+        message: "copied vastai from the vault into this extension's secrets",
+      });
+    } catch (caught) {
+      log?.("api_key_migrate_failed", {
+        message: caught instanceof Error ? caught.message : String(caught),
+      });
+    }
+  }
+  return legacy;
+}
+
 /**
- * The keys to try: the token of prifly's vault entry `vastai`, when there is
- * one and prifly has `api.vault`; then the CLI's own, in its order
- * (`cli/main.py`): `$VAST_API_KEY`; else the 2FA session key, then the API
- * key, in `$XDG_CONFIG_HOME/vastai/`; else the legacy `~/.vast_api_key`. The
- * CLI falls back from an expired 2FA key to the API key, so both are tried,
- * and a refused vault key falls back to the CLI's the same way. Read fresh
- * each refresh: a vault entry changed or fenced, `vastai set api-key` or a
- * new 2FA login is picked up without restarting.
+ * The keys to try: the key in this extension's own secrets (Settings →
+ * Extensions → Vast.ai boxes) when there is one, and then the vault is not
+ * read. With none there, the legacy vault entry `vastai`, copied into the
+ * secrets once; then the CLI's own, in its order (`cli/main.py`):
+ * `$VAST_API_KEY`; else the 2FA session key, then the API key, in
+ * `$XDG_CONFIG_HOME/vastai/`; else the legacy `~/.vast_api_key`. The CLI falls
+ * back from an expired 2FA key to the API key, so both are tried, and a
+ * refused key of ours falls back to the CLI's the same way. Read fresh each
+ * refresh: a key changed in the settings, `vastai set api-key` or a new 2FA
+ * login is picked up without restarting.
  */
 export async function readApiKeys(
   env: Record<string, string | undefined> = process.env,
   home = homedir(),
-  vault?: ExtensionVaultApi,
+  sources: KeySources = {},
 ): Promise<string[]> {
-  const fromVault = (await vault?.read(VAULT_ENTRY))?.trim();
-  const keys: string[] = fromVault ? [fromVault] : [];
+  const own = await readOwnKey(sources);
+  const keys: string[] = own ? [own] : [];
   const fromEnv = env["VAST_API_KEY"]?.trim();
   if (fromEnv) return keys.includes(fromEnv) ? keys : [...keys, fromEnv];
   const config = join(env["XDG_CONFIG_HOME"] || join(home, ".config"), "vastai");
@@ -163,7 +210,7 @@ export async function withKeys<T>(
 ): Promise<T> {
   if (keys.length === 0) {
     throw new Error(
-      "No Vast.ai API key: add an api-token entry `vastai` (level 1) to prifly's vault, or run `vastai set api-key <KEY>`",
+      "No Vast.ai API key: add it in Settings → Extensions → Vast.ai boxes, or run `vastai set api-key <KEY>`",
     );
   }
   let refused: Error | null = null;

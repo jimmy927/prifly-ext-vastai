@@ -163,30 +163,114 @@ describe("readApiKeys", () => {
     expect(await readApiKeys({}, await mkdtemp(join(tmpdir(), "vastai-keys-")))).toEqual([]);
   });
 
-  test("prifly's vault entry `vastai` goes first, the CLI's keys after it, each once", async () => {
+  /** A fake `api.secrets` and `api.vault`, each call written down. */
+  function fakes(stored: string | null, vaulted: string | null) {
+    const calls: string[] = [];
+    const sets: [string, string | null][] = [];
+    const logged: string[] = [];
+    let value = stored;
+    return {
+      calls,
+      sets,
+      logged,
+      sources: {
+        secrets: {
+          get: async (key: string) => {
+            calls.push(`secrets.get ${key}`);
+            return value;
+          },
+          set: async (key: string, next: string | null) => {
+            sets.push([key, next]);
+            value = next;
+          },
+        },
+        vault: {
+          read: async (name: string) => {
+            calls.push(`vault.read ${name}`);
+            return vaulted;
+          },
+        },
+        log: (event: string, fields?: Record<string, unknown>) =>
+          logged.push(`${event} ${String(fields?.["message"] ?? "")}`),
+      },
+    };
+  }
+
+  async function homeWith(file: string | null) {
     const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
     await mkdir(join(home, ".config", "vastai"), { recursive: true });
-    await writeFile(join(home, ".config", "vastai", "vast_api_key"), "file\n");
-    const asked: string[] = [];
-    const vault = (token: string | null) => ({
-      read: async (name: string) => {
-        asked.push(name);
-        return token;
-      },
-    });
-    expect(await readApiKeys({}, home, vault(" vaulted\n"))).toEqual(["vaulted", "file"]);
-    expect(asked).toEqual([VAULT_ENTRY]);
-    expect(VAULT_ENTRY).toBe("vastai");
-    expect(await readApiKeys({}, home, vault("file"))).toEqual(["file"]);
-    expect(await readApiKeys({ VAST_API_KEY: "env" }, home, vault("v"))).toEqual(["v", "env"]);
+    if (file !== null) await writeFile(join(home, ".config", "vastai", "vast_api_key"), file);
+    return home;
+  }
+
+  test("the extension's own secret goes first, the CLI's keys after it, each once; the vault is not read", async () => {
+    const home = await homeWith("file\n");
+    const { sources, calls } = fakes(" own\n", "vaulted");
+    expect(await readApiKeys({}, home, sources)).toEqual(["own", "file"]);
+    expect(calls).toEqual(["secrets.get apiKey"]);
+    expect(await readApiKeys({}, home, fakes("file", null).sources)).toEqual(["file"]);
+    expect(await readApiKeys({ VAST_API_KEY: "env" }, home, fakes("v", null).sources)).toEqual([
+      "v",
+      "env",
+    ]);
   });
 
-  test("no vault entry, or a prifly without `api.vault`, reads the files as before", async () => {
+  test("no secret yet: the vault entry `vastai` is copied into the secrets once, and used", async () => {
+    const home = await homeWith("file\n");
+    const { sources, sets, logged, calls } = fakes(null, " vaulted\n");
+    expect(VAULT_ENTRY).toBe("vastai");
+    expect(await readApiKeys({}, home, sources)).toEqual(["vaulted", "file"]);
+    expect(sets).toEqual([["apiKey", "vaulted"]]);
+    expect(logged).toEqual([
+      "api_key_migrated copied vastai from the vault into this extension's secrets",
+    ]);
+    // The next refresh finds the secret and leaves the vault alone.
+    expect(await readApiKeys({}, home, sources)).toEqual(["vaulted", "file"]);
+    expect(sets).toHaveLength(1);
+    expect(calls.filter((call) => call.startsWith("vault.read"))).toEqual(["vault.read vastai"]);
+  });
+
+  test("a copy that fails is logged, and the vault key is still used", async () => {
+    const home = await homeWith(null);
+    const { sources, logged } = fakes(null, "vaulted");
+    const failing = {
+      ...sources,
+      secrets: {
+        get: sources.secrets.get,
+        set: async () => {
+          throw new Error("secrets are stopped");
+        },
+      },
+    };
+    expect(await readApiKeys({}, home, failing)).toEqual(["vaulted"]);
+    expect(logged).toEqual(["api_key_migrate_failed secrets are stopped"]);
+  });
+
+  test("a prifly without `api.secrets` still uses the vault key, with no copy", async () => {
+    const home = await homeWith("file");
+    const { sources, sets } = fakes(null, "vaulted");
+    const old = { vault: sources.vault, log: sources.log };
+    expect(await readApiKeys({}, home, old)).toEqual(["vaulted", "file"]);
+    expect(sets).toEqual([]);
+  });
+
+  test("neither a secret nor a vault entry, or a prifly with neither, reads the files as before", async () => {
     const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
     await writeFile(join(home, ".vast_api_key"), "legacy");
-    const none = { read: async () => null };
-    expect(await readApiKeys({}, home, none)).toEqual(["legacy"]);
-    expect(await readApiKeys({}, home, undefined)).toEqual(["legacy"]);
+    expect(await readApiKeys({}, home, fakes(null, null).sources)).toEqual(["legacy"]);
+    expect(await readApiKeys({}, home, {})).toEqual(["legacy"]);
+    expect(await readApiKeys({}, home)).toEqual(["legacy"]);
+  });
+
+  test("nothing anywhere: the message names Settings → Extensions, not the vault", async () => {
+    const home = await mkdtemp(join(tmpdir(), "vastai-keys-"));
+    const keys = await readApiKeys({}, home, fakes(null, null).sources);
+    expect(keys).toEqual([]);
+    const failure = await withKeys(keys, async () => "never").catch((caught: unknown) => caught);
+    const message = failure instanceof Error ? failure.message : "";
+    expect(message).toContain("Settings → Extensions");
+    expect(message).toContain("vastai set api-key");
+    expect(message.toLowerCase()).not.toContain("vault");
   });
 });
 

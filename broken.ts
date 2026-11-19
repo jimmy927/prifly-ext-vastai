@@ -27,7 +27,7 @@ import type { onBox, Ran } from "./run";
 import { sshTarget } from "./run";
 import { budgetText, dollars, spentOf } from "./spend";
 import type { Store } from "./store";
-import { type Fetch, type Instance, readApiKeys } from "./vast-api";
+import { type Fetch, type Instance, keySources, readApiKeys } from "./vast-api";
 
 /** A running box ssh has not let into for this long, never once, is broken. */
 const SSH_DOWN_MS = 3 * 60_000;
@@ -218,7 +218,7 @@ export class BrokenWatch {
     }
     const rentDeps: ReplaceDeps = {
       store,
-      keys: deps.keys ?? (() => readApiKeys(process.env, homedir(), api.vault)),
+      keys: deps.keys ?? (() => readApiKeys(process.env, homedir(), keySources(api))),
       get: deps.get ?? fetch,
       now: () => now,
       log: (event, fields) => api.log(event, fields),

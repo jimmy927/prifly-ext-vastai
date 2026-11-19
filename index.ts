@@ -64,6 +64,7 @@ import {
   destroyInstance,
   getAccount,
   type Instance,
+  keySources,
   listInstances,
   readApiKeys,
   withKeys,
@@ -126,8 +127,9 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   const observer = new Observer(store);
   const config = await readConfig(api.folder);
   await logKeyProblem(api, config.sshKey);
-  // prifly's vault entry first (absent on an older prifly), then the CLI's key files.
-  const keys = () => readApiKeys(process.env, homedir(), api.vault);
+  // This extension's own secret first, then (migrated once) prifly's vault
+  // entry `vastai`, then the CLI's key files; the first two are absent on an older prifly.
+  const keys = () => readApiKeys(process.env, homedir(), keySources(api));
   const enforcer = new Enforcer(api, store, config);
   const labels = new Map<number, string>();
   let listed: readonly Instance[] = [];
