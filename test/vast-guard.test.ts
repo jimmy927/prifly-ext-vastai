@@ -129,7 +129,9 @@ describe("the hook's input and output", () => {
     expect(denied.code).toBe(0);
     expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecision).toBe("deny");
     expect(await run("vastai show instances")).toEqual({ code: 0, out: "" });
-  });
+    // Two cold `bun` starts: well under a second alone, but past bun's 5 s
+    // default when the whole suite runs on a loaded machine.
+  }, 30_000);
 
   test("the plugin declares the hook where Claude Code looks for it", async () => {
     const hooks = await Bun.file(join(import.meta.dir, "..", "hooks", "hooks.json")).json();
