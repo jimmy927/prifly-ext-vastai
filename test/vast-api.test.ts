@@ -168,7 +168,7 @@ describe("readApiKeys", () => {
     const calls: string[] = [];
     const sets: [string, string | null][] = [];
     const logged: string[] = [];
-    let value = stored;
+    const values = new Map<string, string | null>([["apiKey", stored]]);
     return {
       calls,
       sets,
@@ -177,11 +177,11 @@ describe("readApiKeys", () => {
         secrets: {
           get: async (key: string) => {
             calls.push(`secrets.get ${key}`);
-            return value;
+            return values.get(key) ?? null;
           },
           set: async (key: string, next: string | null) => {
             sets.push([key, next]);
-            value = next;
+            values.set(key, next);
           },
         },
         vault: {
@@ -220,14 +220,29 @@ describe("readApiKeys", () => {
     const { sources, sets, logged, calls } = fakes(null, " vaulted\n");
     expect(VAULT_ENTRY).toBe("vastai");
     expect(await readApiKeys({}, home, sources)).toEqual(["vaulted", "file"]);
-    expect(sets).toEqual([["apiKey", "vaulted"]]);
+    expect(sets).toEqual([
+      ["apiKey", "vaulted"],
+      ["apiKeyMigrated", "1"],
+    ]);
     expect(logged).toEqual([
       "api_key_migrated copied vastai from the vault into this extension's secrets",
     ]);
     // The next refresh finds the secret and leaves the vault alone.
     expect(await readApiKeys({}, home, sources)).toEqual(["vaulted", "file"]);
-    expect(sets).toHaveLength(1);
+    expect(sets).toHaveLength(2);
     expect(calls.filter((call) => call.startsWith("vault.read"))).toEqual(["vault.read vastai"]);
+  });
+
+  test("after a migration, removing the key is not undone by the vault entry", async () => {
+    const home = await homeWith("file\n");
+    const { sources, sets, calls } = fakes(null, "vaulted");
+    expect(await readApiKeys({}, home, sources)).toEqual(["vaulted", "file"]);
+    await sources.secrets.set("apiKey", null);
+    sets.length = 0;
+    calls.length = 0;
+    expect(await readApiKeys({}, home, sources)).toEqual(["file"]);
+    expect(sets).toEqual([]);
+    expect(calls.some((call) => call.startsWith("vault.read"))).toBe(false);
   });
 
   test("a copy that fails is logged, and the vault key is still used", async () => {

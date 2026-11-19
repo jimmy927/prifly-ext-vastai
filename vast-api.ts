@@ -122,6 +122,9 @@ export const VAULT_ENTRY = "vastai";
 /** The settings field, and the key in `api.secrets`, that holds the Vast.ai API key. */
 export const SECRET_KEY = "apiKey";
 
+/** The secret that marks the vault entry as copied: after it, an empty `apiKey` does not read the vault. */
+export const MIGRATED_KEY = "apiKeyMigrated";
+
 /** What `readApiKeys` reads the key from; each absent on an older prifly. */
 export type KeySources = {
   secrets?: Pick<ExtensionSecretsApi, "get" | "set"> | undefined;
@@ -129,7 +132,7 @@ export type KeySources = {
   log?: ExtensionApi["log"] | undefined;
 };
 
-/** The key sources `api` has; read off it at each call, so a late-arriving piece counts. */
+/** The key sources `api` has, as they are when this is called. */
 export function keySources(api: Pick<ExtensionApi, "secrets" | "vault" | "log">): KeySources {
   return {
     secrets: api.secrets,
@@ -143,6 +146,9 @@ async function readOwnKey(sources: KeySources): Promise<string | null> {
   const { secrets, vault, log } = sources;
   const own = (await secrets?.get(SECRET_KEY))?.trim();
   if (own) return own;
+  // Once migrated, an empty secret means the reader removed the key: the
+  // vault is not read again, so Remove is not undone by an old vault entry.
+  if (secrets && (await secrets.get(MIGRATED_KEY))) return null;
   // Migration only: someone who kept the key in the vault entry `vastai`
   // before the extension had its own secrets keeps working untouched.
   const legacy = (await vault?.read(VAULT_ENTRY))?.trim();
@@ -150,6 +156,7 @@ async function readOwnKey(sources: KeySources): Promise<string | null> {
   if (secrets) {
     try {
       await secrets.set(SECRET_KEY, legacy);
+      await secrets.set(MIGRATED_KEY, "1");
       log?.("api_key_migrated", {
         message: "copied vastai from the vault into this extension's secrets",
       });
@@ -165,8 +172,8 @@ async function readOwnKey(sources: KeySources): Promise<string | null> {
 /**
  * The keys to try: the key in this extension's own secrets (Settings →
  * Extensions → Vast.ai boxes) when there is one, and then the vault is not
- * read. With none there, the legacy vault entry `vastai`, copied into the
- * secrets once; then the CLI's own, in its order (`cli/main.py`):
+ * read. With none there, and never migrated, the legacy vault entry `vastai`,
+ * copied into the secrets once (a removed key stays removed); then the CLI's own, in its order (`cli/main.py`):
  * `$VAST_API_KEY`; else the 2FA session key, then the API key, in
  * `$XDG_CONFIG_HOME/vastai/`; else the legacy `~/.vast_api_key`. The CLI falls
  * back from an expired 2FA key to the API key, so both are tried, and a

@@ -78,7 +78,8 @@ uses nearly every part prifly lets an extension plug in, all described under
    If you kept it before in prifly's vault as an **API token** entry named
    `vastai` (level 1), you need do nothing: the extension copies that key into
    its secrets once, and the vault entry can then be removed in the Vault
-   dialog (the manifest still names `vastai` under `vault` for that one-time
+   dialog; after that copy the vault is not read again, so removing the key
+   from the box leaves the CLI's key files (the manifest still names `vastai` under `vault` for that one-time
    copy only). On a prifly too old to have extension secrets, or with no key
    in the box, store it where the Vast.ai CLI keeps it:
 
@@ -567,8 +568,8 @@ type-checks on its own.
 | `tools?.register(tools)` | Serves MCP tools to every session. Each tool has a `name`, a `description`, a JSON-schema `inputSchema` and `call(args, ctx)`; `ctx.session` is the caller's full session id, `ctx.pick(card)` shows prifly's pick card (optionally with an editable `amount`) and resolves to `{ row, amount }` or null, and `ctx.signal` aborts when the session goes away. Absent on an older prifly: call it as `api.tools?.register(...)`. |
 | `notify?(text, options)` | Tells the reader something now, under the extension's name; `session` makes a click open that session. Absent on an older prifly. |
 | `vault?.read(name)` | The token of prifly's vault entry `name`, or null: only an **API token** entry at level 1, and only one your manifest names under `"vault": ["<name>"]`. Read it each time you need it. Absent on an older prifly: call it as `api.vault?.read(...)` and keep a fallback. |
-| `secrets?` | A sealed key-value store of this extension's own (`get`, `set`, `keys`); a manifest `settings` field of `type: "secret"` is a masked box whose value is `await api.secrets.get(id)`. Where `features` has `secrets` and `setting-secret`; absent on an older prifly: call it as `api.secrets?.get(...)`. |
 | `vault?.ssh?.(name, argv, options)` | Runs `ssh`, `scp`, `sftp` or `rsync` with the vault's **SSH key** entry `name` handed over, and resolves to `{ ok: true, exitCode, timedOut, stdout, stderr }` or `{ ok: false, message }` when nothing ran. Pass no `-i` of your own. Where `features` has `vault-ssh`. |
+| `secrets?` | A sealed key-value store of this extension's own (`get`, `set`, `keys`); a manifest `settings` field of `type: "secret"` is a masked box whose value is `await api.secrets.get(id)`. Where `features` has `secrets` and `setting-secret`; absent on an older prifly: call it as `api.secrets?.get(...)`. |
 | `state?` | JSON documents (`get`, `set`, `update`, `importOnce`, …) and append-only logs (`append`, `read`) in prifly's database, so they move with its data. Where `features` has `state`. |
 | `paths` | The folders your programs are in: your `bin` and your venv's `bin`. This extension ships neither. |
 
