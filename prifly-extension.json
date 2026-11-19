@@ -10,7 +10,7 @@
     {
       "id": "apiKey",
       "label": "Vast.ai API key",
-      "description": "Your Vast.ai API key, kept sealed in this extension's own secrets. Create one at https://cloud.vast.ai/manage-keys/. Left empty, the CLI's key files are used (a key in the old vault entry vastai is copied here once, then ignored).",
+      "description": "Your Vast.ai API key, kept sealed in this extension's own secrets. Create one at https://cloud.vast.ai/manage-keys/. At the first start with this empty, a key in the old vault entry vastai, else the Vast.ai CLI's API key file (vast_api_key), is copied here once; removing it here is not undone. Left empty, the CLI's key files are used.",
       "type": "secret",
       "default": false
     }

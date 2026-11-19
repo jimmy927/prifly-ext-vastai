@@ -79,15 +79,22 @@ uses nearly every part prifly lets an extension plug in, all described under
    `vastai` (level 1), you need do nothing: the extension copies that key into
    its secrets once, and the vault entry can then be removed in the Vault
    dialog; after that copy the vault is not read again, so removing the key
-   from the box leaves the CLI's key files (the manifest still names `vastai` under `vault` for that one-time
-   copy only). On a prifly too old to have extension secrets, or with no key
-   in the box, store it where the Vast.ai CLI keeps it:
+   from the box is not undone (the manifest still names `vastai` under `vault` for that one-time
+   copy only). With no vault entry, the extension likewise copies the Vast.ai
+   CLI's API key file (`~/.config/vastai/vast_api_key`, or under
+   `$XDG_CONFIG_HOME`, else the legacy `~/.vast_api_key`) into its secrets
+   once at the next start, so the key shows as stored with no typing. The
+   CLI's 2FA session key and `$VAST_API_KEY` are not copied, and the CLI's
+   files are never written or changed. With neither a vault entry nor a key
+   file, nothing is copied and a later `vastai set api-key` is picked up at
+   a later start. On a prifly too old to have extension secrets, or with no
+   key in the box, store it where the Vast.ai CLI keeps it:
 
        mkdir -p ~/.config/vastai
        printf %s '<key>' > ~/.config/vastai/vast_api_key && chmod 600 ~/.config/vastai/vast_api_key
 
    `$VAST_API_KEY` works too. The extension reads the key each time it calls
-   Vast.ai, the settings key first (else the old vault entry), then these;
+   Vast.ai, the settings key first (else the old vault entry, else the CLI's key file, each copied there once), then these;
    sessions never print it. A key saved by `vastai set api-key` on this
    machine works unchanged. If Vast.ai refuses the settings key, the files'
    keys are tried next.
@@ -169,7 +176,7 @@ billing someone, so it stays visible.
 - **Polling.** Once a minute (`refreshSeconds`), `vast-api.ts` asks Vast.ai's
   REST API for the boxes — the same `GET /api/v1/instances/` the CLI's
   `show instances --raw` sends, with the key from Settings → Extensions
-  → Vast.ai boxes (else the old vault entry `vastai`), else the one saved in `~/.config/vastai/vast_api_key`. It used to run the CLI itself; on WSL2 each
+  → Vast.ai boxes (else the old vault entry `vastai`, else the CLI's `~/.config/vastai/vast_api_key`, copied there once), else the one saved in `~/.config/vastai/vast_api_key`. It used to run the CLI itself; on WSL2 each
   run read 30–48 MB off disk and took about a second of CPU, once a minute,
   to start Python.
 - **Placing.** Each box becomes one item, placed on the session its label
@@ -767,8 +774,9 @@ prompt, or your skill.
 - **Keep secrets out of the extension.** This extension never touches your
   Vast.ai key. It reads the key from its own sealed secrets (`api.secrets`, the
   **Vast.ai API key** box in Settings → Extensions), else once from the old
-  vault entry `vastai` (`api.vault.read`, only at level 1) to copy it into
-  those secrets, else from `~/.config/vastai/` (or `$VAST_API_KEY`), only to
+  vault entry `vastai` (`api.vault.read`, only at level 1), else once from
+  the CLI's `vast_api_key` file (read only), to copy it into those secrets,
+  else from `~/.config/vastai/` (or `$VAST_API_KEY`), only to
   call Vast.ai, and neither logs nor shows it. With the key in the CLI's
   files, consider `chmod 600 ~/.config/vastai/vast_api_key`.
 - **A budget is a limit, not a lock.** The hook stops the usual shapes of a

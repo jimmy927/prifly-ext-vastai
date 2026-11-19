@@ -128,7 +128,8 @@ export async function activate(rawApi: ExtensionApi): Promise<() => void> {
   const config = await readConfig(api.folder);
   await logKeyProblem(api, config.sshKey);
   // This extension's own secret first, then (migrated once) prifly's vault
-  // entry `vastai`, then the CLI's key files; the first two are absent on an older prifly.
+  // entry `vastai` or else the CLI's `vast_api_key` file, then the CLI's key
+  // files; the secret and the vault are absent on an older prifly.
   const keys = () => readApiKeys(process.env, homedir(), keySources(api));
   const enforcer = new Enforcer(api, store, config);
   const labels = new Map<number, string>();

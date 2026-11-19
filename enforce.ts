@@ -118,7 +118,7 @@ export type EnforceDeps = BrokenDeps & {
 /**
  * Destroy over REST with the account's key, as `guard.sh` does on the box:
  * this extension's own secret first, then (migrated once) prifly's vault entry
- * `vastai`, then the CLI's key files.
+ * `vastai` or else the CLI's `vast_api_key` file, then the CLI's key files.
  */
 export function restDeps(
   sources: KeySources,

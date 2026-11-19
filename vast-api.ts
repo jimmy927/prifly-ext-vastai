@@ -141,24 +141,59 @@ export function keySources(api: Pick<ExtensionApi, "secrets" | "vault" | "log">)
   };
 }
 
-/** The key from this extension's secrets, else (copied there once) from the legacy vault entry. */
-async function readOwnKey(sources: KeySources): Promise<string | null> {
+/**
+ * The vastai CLI's long-lived API key file: `$XDG_CONFIG_HOME/vastai/vast_api_key`
+ * (default `~/.config`), else the legacy `~/.vast_api_key`. Never the 2FA
+ * session key and never `$VAST_API_KEY`. Read only, never written.
+ */
+async function readCliKeyFile(
+  env: Record<string, string | undefined>,
+  home: string,
+): Promise<string | null> {
+  const config = join(env["XDG_CONFIG_HOME"] || join(home, ".config"), "vastai");
+  for (const path of [join(config, "vast_api_key"), join(home, ".vast_api_key")]) {
+    try {
+      const file = Bun.file(path);
+      if (!(await file.exists())) continue;
+      const key = (await file.text()).trim();
+      if (key !== "") return key;
+    } catch {
+      // An unreadable file is as good as none; the fallback in readApiKeys reads it the same way.
+    }
+  }
+  return null;
+}
+
+/**
+ * The key from this extension's secrets, else (copied there once) from the
+ * legacy vault entry, else (copied there once) from the CLI's API key file.
+ */
+async function readOwnKey(
+  sources: KeySources,
+  env: Record<string, string | undefined>,
+  home: string,
+): Promise<string | null> {
   const { secrets, vault, log } = sources;
   const own = (await secrets?.get(SECRET_KEY))?.trim();
   if (own) return own;
-  // Once migrated, an empty secret means the reader removed the key: the
-  // vault is not read again, so Remove is not undone by an old vault entry.
+  // Once migrated, an empty secret means the reader removed the key: neither
+  // the vault nor the file is read again, so Remove is not undone.
   if (secrets && (await secrets.get(MIGRATED_KEY))) return null;
   // Migration only: someone who kept the key in the vault entry `vastai`
-  // before the extension had its own secrets keeps working untouched.
-  const legacy = (await vault?.read(VAULT_ENTRY))?.trim();
+  // before the extension had its own secrets keeps working untouched. The
+  // vault wins over the CLI's file when both exist.
+  const vaulted = (await vault?.read(VAULT_ENTRY))?.trim();
+  const fromVault = Boolean(vaulted);
+  const legacy = vaulted || (secrets ? await readCliKeyFile(env, home) : null);
   if (!legacy) return null;
   if (secrets) {
     try {
       await secrets.set(SECRET_KEY, legacy);
       await secrets.set(MIGRATED_KEY, "1");
       log?.("api_key_migrated", {
-        message: "copied vastai from the vault into this extension's secrets",
+        message: fromVault
+          ? "copied vastai from the vault into this extension's secrets"
+          : "copied the vastai CLI's API key file into this extension's secrets",
       });
     } catch (caught) {
       log?.("api_key_migrate_failed", {
@@ -173,7 +208,10 @@ async function readOwnKey(sources: KeySources): Promise<string | null> {
  * The keys to try: the key in this extension's own secrets (Settings →
  * Extensions → Vast.ai boxes) when there is one, and then the vault is not
  * read. With none there, and never migrated, the legacy vault entry `vastai`,
- * copied into the secrets once (a removed key stays removed); then the CLI's own, in its order (`cli/main.py`):
+ * else the CLI's API key file (`vast_api_key`; not the 2FA key, not
+ * `$VAST_API_KEY`), copied into the secrets once (a removed key stays removed;
+ * with neither, nothing is marked, so a later `vastai set api-key` is still
+ * picked up); then the CLI's own, in its order (`cli/main.py`):
  * `$VAST_API_KEY`; else the 2FA session key, then the API key, in
  * `$XDG_CONFIG_HOME/vastai/`; else the legacy `~/.vast_api_key`. The CLI falls
  * back from an expired 2FA key to the API key, so both are tried, and a
@@ -186,7 +224,7 @@ export async function readApiKeys(
   home = homedir(),
   sources: KeySources = {},
 ): Promise<string[]> {
-  const own = await readOwnKey(sources);
+  const own = await readOwnKey(sources, env, home);
   const keys: string[] = own ? [own] : [];
   const fromEnv = env["VAST_API_KEY"]?.trim();
   if (fromEnv) return keys.includes(fromEnv) ? keys : [...keys, fromEnv];
